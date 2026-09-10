@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot Service is Active and Running!"
+    return "Bot Engine Live!"
 
 def send_msg(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -25,41 +25,43 @@ def send_msg(token, chat_id, text):
         return {"ok": False, "error": str(e)}
 
 def fetch_crypto_data():
-    # Source 1: CryptoCompare API (No Geo-block, High Reliability)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # Provider 1: CoinCap API (No IP restrictions for cloud hosting)
     try:
-        url = "https://min-api.cryptocompare.com/data/top/mktcapfull?limit=10&tsym=USD"
-        res = requests.get(url, timeout=10)
+        res = requests.get("https://api.coincap.io/v2/assets?limit=10", headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json().get('data', [])
+            result = []
+            for coin in data:
+                result.append({
+                    "symbol": coin["symbol"].upper() + "USDT",
+                    "current_price": float(coin["priceUsd"]),
+                    "total_volume": float(coin["volumeUsd24Hr"]),
+                    "price_change_percentage_24h": float(coin["changePercent24Hr"])
+                })
+            if result:
+                return result
+    except Exception:
+        pass
+
+    # Provider 2: CryptoCompare Backup
+    try:
+        res = requests.get("https://min-api.cryptocompare.com/data/top/mktcapfull?limit=10&tsym=USD", headers=headers, timeout=10)
         if res.status_code == 200:
             data = res.json().get("Data", [])
-            formatted = []
+            result = []
             for item in data:
                 raw = item.get("RAW", {}).get("USD", {})
                 if raw:
-                    formatted.append({
+                    result.append({
                         "symbol": raw.get("FROMSYMBOL", "") + "USDT",
                         "current_price": float(raw.get("PRICE", 0)),
                         "total_volume": float(raw.get("VOLUME24HOURTO", 0)),
                         "price_change_percentage_24h": float(raw.get("CHANGEPCT24HOUR", 0))
                     })
-            if formatted:
-                return formatted
-    except Exception:
-        pass
-
-    # Source 2: CoinGecko API Fallback
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {"vs_currency": "usd", "order": "volume_desc", "per_page": 10, "page": 1}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, params=params, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            return [{
-                "symbol": coin["symbol"].upper() + "USDT",
-                "current_price": coin["current_price"],
-                "total_volume": coin["total_volume"],
-                "price_change_percentage_24h": coin.get("price_change_percentage_24h", 0.0)
-            } for coin in data]
+            if result:
+                return result
     except Exception:
         pass
 
@@ -69,7 +71,7 @@ def execute_signal_cycle():
     coins = fetch_crypto_data()
     
     if not coins:
-        send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, "⚠️ *Data Engine Alert*: Fetch Failed. Retrying...")
+        send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, "⚠️ *Data Engine Alert*: Re-connecting endpoints...")
         return
 
     for index, coin in enumerate(coins):
@@ -80,7 +82,7 @@ def execute_signal_cycle():
 
         spot = (
             f"🟢 *[SPOT SIGNAL] {symbol}*\n\n"
-            f"📥 *Entry Range*: ${price}\n"
+            f"📥 *Entry Range*: ${price:.4f}\n"
             f"📊 *24h Vol*: ${volume:.2f}M | *Change*: {change:+.2f}%\n\n"
             f"🎯 *Target 1*: ${round(price * 1.02, 4)} (+2.0%)\n"
             f"🎯 *Target 2*: ${round(price * 1.045, 4)} (+4.5%)\n"
@@ -92,7 +94,7 @@ def execute_signal_cycle():
         futures = (
             f"⚡ *[FUTURES LONG] {symbol}*\n\n"
             f"⚙️ *Leverage*: Cross 10x - 20x\n"
-            f"📥 *Entry*: ${price}\n\n"
+            f"📥 *Entry*: ${price:.4f}\n\n"
             f"🎯 *Target 1*: ${round(price * 1.015, 4)} (+15% @ 10x)\n"
             f"🎯 *Target 2*: ${round(price * 1.03, 4)} (+30% @ 10x)\n"
             f"🎯 *Target 3*: ${round(price * 1.05, 4)} (+50% @ 10x)\n"
@@ -100,13 +102,13 @@ def execute_signal_cycle():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # Send to VIP Channel
+        # VIP Channel Delivery
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot)
         time.sleep(1)
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures)
         time.sleep(1.5)
 
-        # Send Free Preview to Free Channel (First 2 coins)
+        # Free Channel Preview Delivery (First 2 Coins)
         if index < 2:
             promo = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
