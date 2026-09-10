@@ -27,8 +27,7 @@ def send_telegram_msg(bot_token, chat_id, message_text):
         res = requests.post(url, json=payload, timeout=10)
         return res.json()
     except Exception as e:
-        print(f"Error sending message: {e}")
-        return None
+        return {"ok": False, "description": str(e)}
 
 def fetch_top_10_volume():
     url = "https://api.coingecko.com/api/v3/coins/markets"
@@ -44,7 +43,6 @@ def fetch_top_10_volume():
     try:
         res = requests.get(url, params=params, headers=headers, timeout=10)
         data = res.json()
-        
         if isinstance(data, list):
             formatted_data = []
             for coin in data:
@@ -55,15 +53,28 @@ def fetch_top_10_volume():
                     "priceChangePercent": coin.get("price_change_percentage_24h", 0.0)
                 })
             return formatted_data
-        else:
-            return []
-            
-    except Exception as e:
+        return []
+    except Exception:
         return []
 
 def run_signals_engine():
-    top_coins = fetch_top_10_volume()
+    # TEST STEP: Direct Message Check on Free Channel
+    free_test_res = send_telegram_msg(
+        FREE_BOT_TOKEN, 
+        FREE_CHANNEL_ID, 
+        "🧪 *FREE BOT DIAGNOSTIC TEST*\n\nIf you see this message, Free Bot is fully operational!"
+    )
     
+    # If Free Bot fails, notify VIP Channel with exact error
+    if free_test_res and not free_test_res.get("ok"):
+        error_desc = free_test_res.get("description", "Unknown Error")
+        send_telegram_msg(
+            VIP_BOT_TOKEN, 
+            VIP_CHANNEL_ID, 
+            f"❌ *Free Channel Post Error*: `{error_desc}`\n\nCheck if Bot Token or Channel ID is correct!"
+        )
+
+    top_coins = fetch_top_10_volume()
     if not top_coins:
         return
 
@@ -95,13 +106,11 @@ def run_signals_engine():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # Send VIP Signals
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_signal)
         time.sleep(1)
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_signal)
         time.sleep(2)
 
-        # Send Free Preview for first 2 coins
         if index < 2:
             free_promo_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
