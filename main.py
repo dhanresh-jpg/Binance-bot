@@ -38,9 +38,8 @@ def fetch_crypto_data():
                     "total_volume": float(coin["volumeUsd24Hr"]),
                     "price_change_percentage_24h": float(coin["changePercent24Hr"])
                 })
-            if result:
-                return result
-    except Exception:
+            return result
+    except:
         pass
     return []
 
@@ -50,72 +49,59 @@ def execute_signal_cycle():
         return
 
     for index, coin in enumerate(coins):
-        symbol = str(coin["symbol"])
-        price = round(float(coin["current_price"]), 4)
-        volume = round(float(coin["total_volume"]) / 1_000_000, 2)
-        change = round(float(coin["price_change_percentage_24h"]), 2)
-
-        t1 = round(price * 1.02, 4)
-        t2 = round(price * 1.045, 4)
-        t3 = round(price * 1.08, 4)
-        sl = round(price * 0.965, 4)
+        symbol = coin["symbol"]
+        price = coin["current_price"]
+        volume = float(coin["total_volume"]) / 1_000_000
+        change = float(coin["price_change_percentage_24h"])
 
         spot = (
             f"🟢 *[SPOT SIGNAL] {symbol}*\n\n"
-            f"📥 *Entry Range*: ${price}\n"
-            f"📊 *24h Vol*: ${volume}M | *Change*: {change}%\n\n"
-            f"🎯 *Target 1*: ${t1} (+2.0%)\n"
-            f"🎯 *Target 2*: ${t2} (+4.5%)\n"
-            f"🎯 *Target 3*: ${t3} (+8.0%)\n"
-            f"⛔ *Stop Loss*: ${sl} (-3.5%)\n\n"
+            f"📥 *Entry Range*: ${price:.4f}\n"
+            f"📊 *24h Vol*: ${volume:.2f}M | *Change*: {change:+.2f}%\n\n"
+            f"🎯 *Target 1*: ${round(price * 1.02, 4)} (+2.0%)\n"
+            f"🎯 *Target 2*: ${round(price * 1.045, 4)} (+4.5%)\n"
+            f"🎯 *Target 3*: ${round(price * 1.08, 4)} (+8.0%)\n"
+            f"⛔ *Stop Loss*: ${round(price * 0.965, 4)} (-3.5%)\n\n"
             f"📈 *Analysis*: Top Volume Momentum"
         )
-
-        ft1 = round(price * 1.015, 4)
-        ft2 = round(price * 1.03, 4)
-        ft3 = round(price * 1.05, 4)
-        fsl = round(price * 0.985, 4)
-
+        
         futures = (
             f"⚡ *[FUTURES LONG] {symbol}*\n\n"
             f"⚙️ *Leverage*: Cross 10x - 20x\n"
-            f"📥 *Entry*: ${price}\n\n"
-            f"🎯 *Target 1*: ${ft1} (+15% @ 10x)\n"
-            f"🎯 *Target 2*: ${ft2} (+30% @ 10x)\n"
-            f"🎯 *Target 3*: ${ft3} (+50% @ 10x)\n"
-            f"⛔ *Stop Loss*: ${fsl} (-15% @ 10x)\n\n"
+            f"📥 *Entry*: ${price:.4f}\n\n"
+            f"🎯 *Target 1*: ${round(price * 1.015, 4)} (+15% @ 10x)\n"
+            f"🎯 *Target 2*: ${round(price * 1.03, 4)} (+30% @ 10x)\n"
+            f"🎯 *Target 3*: ${round(price * 1.05, 4)} (+50% @ 10x)\n"
+            f"⛔ *Stop Loss*: ${round(price * 0.985, 4)} (-15% @ 10x)\n\n"
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Messages
+        # Send to VIP
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot)
         time.sleep(1)
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures)
-        time.sleep(1.5)
+        time.sleep(1)
 
-        # Free Messages (First 2 Coins Only)
+        # Send to Free (First 2 coins only)
         if index < 2:
-            free_text = (
-                f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            free_msg = (
+                f"🚀 *FREE PREVIEW SIGNAL* 🚀\n\n"
                 f"{spot}\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 *UNLOCK ALL 10 SPOT & FUTURES SIGNALS* 🔥\n\n"
-                f"💳 *Subscription Plans*:\n"
-                f"• 10 Days: $10 USDT\n"
-                f"• 20 Days: $19 USDT\n"
-                f"• 30 Days: $27 USDT\n\n"
-                f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
+                f"🔥 *JOIN VIP FOR ALL SIGNALS*: @BinanceTop10_VIPBot"
             )
-            send_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_text)
-            time.sleep(1.5)
+            res = send_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_msg)
+            
+            # Diagnostic: If Free Bot fails, print exact reason to VIP Channel
+            if not res or not res.get("ok"):
+                err = res.get("description", "Unknown Error") if res else "No Response"
+                send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, f"⚠️ *Free Channel Delivery Failure*: `{err}`")
+            time.sleep(1)
 
 def run_loop():
     time.sleep(3)
-    execute_signal_cycle()
     while True:
-        time.sleep(3600)
         execute_signal_cycle()
+        time.sleep(3600)
 
 threading.Thread(target=run_loop, daemon=True).start()
 
