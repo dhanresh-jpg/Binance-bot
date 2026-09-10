@@ -26,10 +26,8 @@ def send_msg(token, chat_id, text):
 
 def fetch_crypto_data():
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    # Provider 1: CoinCap
     try:
-        res = requests.get("https://api.coincap.io/v2/assets?limit=10", headers=headers, timeout=5)
+        res = requests.get("https://api.coincap.io/v2/assets?limit=10", headers=headers, timeout=10)
         if res.status_code == 200:
             data = res.json().get('data', [])
             result = []
@@ -44,81 +42,60 @@ def fetch_crypto_data():
                 return result
     except Exception:
         pass
-
-    # Provider 2: CryptoCompare
-    try:
-        res = requests.get("https://min-api.cryptocompare.com/data/top/mktcapfull?limit=10&tsym=USD", headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json().get("Data", [])
-            result = []
-            for item in data:
-                raw = item.get("RAW", {}).get("USD", {})
-                if raw:
-                    result.append({
-                        "symbol": raw.get("FROMSYMBOL", "") + "USDT",
-                        "current_price": float(raw.get("PRICE", 0)),
-                        "total_volume": float(raw.get("VOLUME24HOURTO", 0)),
-                        "price_change_percentage_24h": float(raw.get("CHANGEPCT24HOUR", 0))
-                    })
-            if result:
-                return result
-    except Exception:
-        pass
-
-    # Fallback Market Data (Ensures Signals ALWAYS Fire Even If Cloud Hosting Blocks APIs)
-    return [
-        {"symbol": "BTCUSDT", "current_price": 62450.0, "total_volume": 2540000000.0, "price_change_percentage_24h": 2.45},
-        {"symbol": "ETHUSDT", "current_price": 3450.5, "total_volume": 1280000000.0, "price_change_percentage_24h": 1.80},
-        {"symbol": "SOLUSDT", "current_price": 142.2, "total_volume": 890000000.0, "price_change_percentage_24h": 5.12},
-        {"symbol": "BNBUSDT", "current_price": 580.0, "total_volume": 450000000.0, "price_change_percentage_24h": 0.95},
-        {"symbol": "XRPUSDT", "current_price": 0.585, "total_volume": 380000000.0, "price_change_percentage_24h": -1.20},
-        {"symbol": "ADAUSDT", "current_price": 0.395, "total_volume": 210000000.0, "price_change_percentage_24h": 3.40},
-        {"symbol": "AVAXUSDT", "current_price": 24.8, "total_volume": 195000000.0, "price_change_percentage_24h": 4.10},
-        {"symbol": "DOGEUSDT", "current_price": 0.108, "total_volume": 310000000.0, "price_change_percentage_24h": -0.80},
-        {"symbol": "DOTUSDT", "current_price": 4.65, "total_volume": 125000000.0, "price_change_percentage_24h": 1.15},
-        {"symbol": "LINKUSDT", "current_price": 11.2, "total_volume": 165000000.0, "price_change_percentage_24h": 2.90}
-    ]
+    return []
 
 def execute_signal_cycle():
     coins = fetch_crypto_data()
+    if not coins:
+        return
 
     for index, coin in enumerate(coins):
-        symbol = coin["symbol"]
-        price = coin["current_price"]
-        volume = float(coin["total_volume"]) / 1_000_000
-        change = float(coin["price_change_percentage_24h"])
+        symbol = str(coin["symbol"])
+        price = round(float(coin["current_price"]), 4)
+        volume = round(float(coin["total_volume"]) / 1_000_000, 2)
+        change = round(float(coin["price_change_percentage_24h"]), 2)
+
+        t1 = round(price * 1.02, 4)
+        t2 = round(price * 1.045, 4)
+        t3 = round(price * 1.08, 4)
+        sl = round(price * 0.965, 4)
 
         spot = (
             f"🟢 *[SPOT SIGNAL] {symbol}*\n\n"
-            f"📥 *Entry Range*: ${price:.4f}\n"
-            f"📊 *24h Vol*: ${volume:.2f}M | *Change*: {change:+.2f}%\n\n"
-            f"🎯 *Target 1*: ${round(price * 1.02, 4)} (+2.0%)\n"
-            f"🎯 *Target 2*: ${round(price * 1.045, 4)} (+4.5%)\n"
-            f"🎯 *Target 3*: ${round(price * 1.08, 4)} (+8.0%)\n"
-            f"⛔ *Stop Loss*: ${round(price * 0.965, 4)} (-3.5%)\n\n"
+            f"📥 *Entry Range*: ${price}\n"
+            f"📊 *24h Vol*: ${volume}M | *Change*: {change}%\n\n"
+            f"🎯 *Target 1*: ${t1} (+2.0%)\n"
+            f"🎯 *Target 2*: ${t2} (+4.5%)\n"
+            f"🎯 *Target 3*: ${t3} (+8.0%)\n"
+            f"⛔ *Stop Loss*: ${sl} (-3.5%)\n\n"
             f"📈 *Analysis*: Top Volume Momentum"
         )
-        
+
+        ft1 = round(price * 1.015, 4)
+        ft2 = round(price * 1.03, 4)
+        ft3 = round(price * 1.05, 4)
+        fsl = round(price * 0.985, 4)
+
         futures = (
             f"⚡ *[FUTURES LONG] {symbol}*\n\n"
             f"⚙️ *Leverage*: Cross 10x - 20x\n"
-            f"📥 *Entry*: ${price:.4f}\n\n"
-            f"🎯 *Target 1*: ${round(price * 1.015, 4)} (+15% @ 10x)\n"
-            f"🎯 *Target 2*: ${round(price * 1.03, 4)} (+30% @ 10x)\n"
-            f"🎯 *Target 3*: ${round(price * 1.05, 4)} (+50% @ 10x)\n"
-            f"⛔ *Stop Loss*: ${round(price * 0.985, 4)} (-15% @ 10x)\n\n"
+            f"📥 *Entry*: ${price}\n\n"
+            f"🎯 *Target 1*: ${ft1} (+15% @ 10x)\n"
+            f"🎯 *Target 2*: ${ft2} (+30% @ 10x)\n"
+            f"🎯 *Target 3*: ${ft3} (+50% @ 10x)\n"
+            f"⛔ *Stop Loss*: ${fsl} (-15% @ 10x)\n\n"
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Channel Delivery
+        # VIP Messages
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot)
         time.sleep(1)
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures)
         time.sleep(1.5)
 
-        # Free Channel Preview Delivery (First 2 Coins)
+        # Free Messages (First 2 Coins Only)
         if index < 2:
-            promo = (
+            free_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"{spot}\n\n"
@@ -130,14 +107,15 @@ def execute_signal_cycle():
                 f"• 30 Days: $27 USDT\n\n"
                 f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
             )
-            send_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, promo)
+            send_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_text)
             time.sleep(1.5)
 
 def run_loop():
-    time.sleep(5)
+    time.sleep(3)
+    execute_signal_cycle()
     while True:
-        execute_signal_cycle()
         time.sleep(3600)
+        execute_signal_cycle()
 
 threading.Thread(target=run_loop, daemon=True).start()
 
