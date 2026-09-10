@@ -26,36 +26,57 @@ def send_telegram_msg(bot_token, chat_id, message_text):
       "disable_web_page_preview": True,
   }
   try:
-    requests.post(url, json=payload, timeout=10)
+    res = requests.post(url, json=payload, timeout=10)
+    print(f"Telegram response: {res.status_code}")
   except Exception as e:
     print(f"Error sending message: {e}")
 
 
 def fetch_top_10_volume():
-  url = "https://api.binance.com/api/v3/ticker/24hr"
-  try:
-    res = requests.get(url, timeout=10).json()
-    if not isinstance(res, list):
-      return []
-    usdt_pairs = [
-        x
-        for x in res
-        if isinstance(x, dict)
-        and x.get("symbol", "").endswith("USDT")
-        and "UP" not in x.get("symbol", "")
-        and "DOWN" not in x.get("symbol", "")
-    ]
-    return sorted(
-        usdt_pairs, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True
-    )[:10]
-  except Exception as e:
-    print("Fetch error:", e)
+  # Alternate Binance API URLs (Cloud block bypass karne ke liye)
+  endpoints = [
+      "https://api.binance.com/api/v3/ticker/24hr",
+      "https://api1.binance.com/api/v3/ticker/24hr",
+      "https://api2.binance.com/api/v3/ticker/24hr",
+      "https://api3.binance.com/api/v3/ticker/24hr",
+  ]
+
+  res_data = None
+  for url in endpoints:
+    try:
+      response = requests.get(
+          url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+      )
+      if response.status_code == 200:
+        res_data = response.json()
+        print(f"Successfully fetched data from {url}")
+        break
+    except Exception as e:
+      print(f"Failed fetching from {url}: {e}")
+
+  if not res_data or not isinstance(res_data, list):
+    print("Could not fetch Binance data from any endpoint.")
     return []
+
+  usdt_pairs = [
+      x
+      for x in res_data
+      if isinstance(x, dict)
+      and x.get("symbol", "").endswith("USDT")
+      and "UP" not in x.get("symbol", "")
+      and "DOWN" not in x.get("symbol", "")
+  ]
+  return sorted(
+      usdt_pairs, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True
+  )[:10]
 
 
 def run_signals_engine():
+  print("Starting signal engine cycle...")
   top_coins = fetch_top_10_volume()
+
   if not top_coins:
+    print("No coins data available to process.")
     return
 
   for index, coin in enumerate(top_coins):
@@ -89,7 +110,7 @@ def run_signals_engine():
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_signal)
     time.sleep(1)
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_signal)
-    time.sleep(2)
+    time.sleep(1)
 
     if index < 2:
       free_promo_text = (
@@ -105,19 +126,18 @@ def run_signals_engine():
           f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
       )
       send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo_text)
-      time.sleep(2)
+      time.sleep(1)
 
 
 def bot_loop():
-  # Initial instant run
-  time.sleep(5)
+  time.sleep(2)
   run_signals_engine()
   while True:
     time.sleep(3600)
     run_signals_engine()
 
 
-# Start background thread when app starts
+# Background execution start
 threading.Thread(target=bot_loop, daemon=True).start()
 
 if __name__ == "__main__":
