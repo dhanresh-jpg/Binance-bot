@@ -32,65 +32,53 @@ def send_telegram_msg(bot_token, chat_id, message_text):
 
 
 def fetch_top_10_volume():
-  # Headers to bypass bot-blocking on Binance API
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      )
+  # Alternative API endpoint that bypasses US region restrictions
+  url = "https://api.coingecko.com/api/v3/coins/markets"
+  params = {
+      "vs_currency": "usd",
+      "order": "volume_desc",
+      "per_page": 10,
+      "page": 1,
+      "sparkline": "false",
   }
-  url = "https://api.binance.com/api/v3/ticker/24hr"
+  headers = {"User-Agent": "Mozilla/5.0"}
 
   try:
-    res = requests.get(url, headers=headers, timeout=10)
+    res = requests.get(url, params=params, headers=headers, timeout=10)
     data = res.json()
 
-    if not isinstance(data, list):
-      send_telegram_msg(
-          VIP_BOT_TOKEN,
-          VIP_CHANNEL_ID,
-          f"⚠️ *Binance API Error*: Response was not a list. Details: {data}",
-      )
+    if isinstance(data, list):
+      formatted_data = []
+      for coin in data:
+        formatted_data.append({
+            "symbol": coin["symbol"].upper() + "USDT",
+            "lastPrice": coin["current_price"],
+            "quoteVolume": coin["total_volume"],
+            "priceChangePercent": coin.get(
+                "price_change_percentage_24h", 0.0
+            ),
+        })
+      return formatted_data
+    else:
       return []
-
-    usdt_pairs = [
-        x
-        for x in data
-        if isinstance(x, dict)
-        and x.get("symbol", "").endswith("USDT")
-        and "UP" not in x.get("symbol", "")
-        and "DOWN" not in x.get("symbol", "")
-    ]
-    sorted_pairs = sorted(
-        usdt_pairs, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True
-    )[:10]
-
-    return sorted_pairs
 
   except Exception as e:
     send_telegram_msg(
         VIP_BOT_TOKEN,
         VIP_CHANNEL_ID,
-        f"⚠️ *Binance API Exception*: Could not connect to Binance. Error:"
-        f" {str(e)}",
+        f"⚠️ *Data Fetch Error*: {str(e)}",
     )
     return []
 
 
 def run_signals_engine():
-  # Notify VIP channel that execution cycle has started
-  send_telegram_msg(
-      VIP_BOT_TOKEN,
-      VIP_CHANNEL_ID,
-      "🔄 *System Update*: Fetching latest Binance Top 10 Volume Coins...",
-  )
-
   top_coins = fetch_top_10_volume()
 
   if not top_coins:
     send_telegram_msg(
         VIP_BOT_TOKEN,
         VIP_CHANNEL_ID,
-        "❌ *Execution Alert*: No coin data received from Binance API.",
+        "❌ *Execution Alert*: Unable to fetch market data.",
     )
     return
 
@@ -145,8 +133,7 @@ def run_signals_engine():
 
 
 def bot_loop():
-  # Trigger immediately upon boot
-  time.sleep(10)
+  time.sleep(5)
   run_signals_engine()
   while True:
     time.sleep(3600)
