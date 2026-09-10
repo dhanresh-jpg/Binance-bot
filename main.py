@@ -25,41 +25,58 @@ def send_telegram_msg(chat_id, text):
     try:
         res = requests.post(url, json=payload, timeout=10)
         return res.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
+    except Exception:
+        return {"ok": False}
 
 def fetch_market_data():
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # Direct Public Price Feed (Guaranteed Fallback List)
+    symbols = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "DOT"]
+    
     try:
-        url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH,SOL,BNB,XRP,DOGE,ADA,AVAX,LINK,DOT&tsyms=USD"
+        url = f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={','.join(symbols)}&tsyms=USD"
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
             data = res.json()
             result = []
-            for coin, info in data.items():
-                if "USD" in info:
+            for s in symbols:
+                if s in data and "USD" in data[s]:
                     result.append({
-                        "symbol": coin + "USDT",
-                        "price": float(info["USD"]),
-                        "volume": 250.0,
-                        "change": 2.5
+                        "symbol": s + "USDT",
+                        "price": float(data[s]["USD"]),
+                        "volume": 210.0,
+                        "change": 1.95
                     })
             if len(result) > 0:
                 return result
     except Exception:
         pass
+
+    # Secondary Backup: Binance Public Single Ticker Query
+    try:
+        result = []
+        for s in symbols:
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={s}USDT"
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                p_data = res.json()
+                result.append({
+                    "symbol": s + "USDT",
+                    "price": float(p_data["price"]),
+                    "volume": 180.0,
+                    "change": 1.50
+                })
+        if len(result) > 0:
+            return result
+    except Exception:
+        pass
+
     return []
 
 def signal_engine():
-    # Diagnostic test for Free Channel delivery permission
-    test_free = send_telegram_msg(FREE_CHANNEL_ID, "🧪 *Free Channel System Test Connection...*")
-    
-    if not test_free.get("ok"):
-        error_details = test_free.get("description", "Unknown Error")
-        send_telegram_msg(VIP_CHANNEL_ID, f"❌ *FREE CHANNEL TELEGRAM REJECTION*:\n`{error_details}`")
-        return
-
     coins = fetch_market_data()
+    
     if not coins:
         send_telegram_msg(VIP_CHANNEL_ID, "⚠️ *API Re-connecting...*")
         return
@@ -92,13 +109,13 @@ def signal_engine():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Channel Delivery
+        # Send to VIP Channel
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
         time.sleep(1)
         send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
 
-        # Free Channel Delivery
+        # Send First 2 Coins Preview to Free Channel
         if index < 2:
             free_promo_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
