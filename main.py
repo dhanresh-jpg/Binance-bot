@@ -25,15 +25,11 @@ def send_telegram_msg(chat_id, text):
     try:
         res = requests.post(url, json=payload, timeout=10)
         return res.json()
-    except Exception:
-        return {"ok": False}
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
 
 def fetch_market_data():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    # Provider 1: Public CryptoCompare Single Ticker API
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH,SOL,BNB,XRP,DOGE,ADA,AVAX,LINK,DOT&tsyms=USD"
         res = requests.get(url, headers=headers, timeout=10)
@@ -52,33 +48,18 @@ def fetch_market_data():
                 return result
     except Exception:
         pass
-
-    # Provider 2: Binance US / Global Public Proxy API
-    try:
-        url = "https://api.binance.us/api/v3/ticker/price"
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            target_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
-            result = []
-            for item in data:
-                if item["symbol"] in target_symbols:
-                    result.append({
-                        "symbol": item["symbol"],
-                        "price": float(item["price"]),
-                        "volume": 180.0,
-                        "change": 1.8
-                    })
-            if len(result) > 0:
-                return result
-    except Exception:
-        pass
-
     return []
 
 def signal_engine():
-    coins = fetch_market_data()
+    # Diagnostic test for Free Channel delivery permission
+    test_free = send_telegram_msg(FREE_CHANNEL_ID, "🧪 *Free Channel System Test Connection...*")
     
+    if not test_free.get("ok"):
+        error_details = test_free.get("description", "Unknown Error")
+        send_telegram_msg(VIP_CHANNEL_ID, f"❌ *FREE CHANNEL TELEGRAM REJECTION*:\n`{error_details}`")
+        return
+
+    coins = fetch_market_data()
     if not coins:
         send_telegram_msg(VIP_CHANNEL_ID, "⚠️ *API Re-connecting...*")
         return
@@ -111,13 +92,13 @@ def signal_engine():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Channel Delivery (All 10 coins)
+        # VIP Channel Delivery
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
         time.sleep(1)
         send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
 
-        # Free Channel Delivery (First 2 coins only)
+        # Free Channel Delivery
         if index < 2:
             free_promo_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
