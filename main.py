@@ -3,8 +3,8 @@ import time
 from flask import Flask
 import requests
 
-VIP_BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
-FREE_BOT_TOKEN = "8842407289:AAEBSOVQz1NRFmdZFFYsd7TPhoA5TKSJMfk"
+# Single Bot Token used for both channels to avoid permission blocks
+BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
@@ -15,8 +15,8 @@ app = Flask(__name__)
 def home():
     return "Automated Signal System Active!"
 
-def send_telegram_msg(bot_token, chat_id, text):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+def send_telegram_msg(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -82,7 +82,7 @@ def signal_engine():
     coins = fetch_market_data()
     
     if not coins:
-        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, "⚠️ *API Retrying...*")
+        send_telegram_msg(VIP_CHANNEL_ID, "⚠️ *API Retrying...*")
         return
 
     for index, coin in enumerate(coins):
@@ -114,12 +114,12 @@ def signal_engine():
         )
 
         # VIP Delivery (All 10 coins)
-        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_text)
+        send_telegram_msg(VIP_CHANNEL_ID, spot_text)
         time.sleep(1)
-        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_text)
+        send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
 
-        # Free Channel Delivery (First 2 coins only)
+        # Free Channel Delivery (First 2 coins only via VIP Bot)
         if index < 2:
             free_promo_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
@@ -133,7 +133,7 @@ def signal_engine():
                 f"• 30 Days: $27 USDT\n\n"
                 f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
             )
-            send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo_text)
+            send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
             time.sleep(1.5)
 
 def execution_loop():
