@@ -31,43 +31,50 @@ def send_telegram_msg(bot_token, chat_id, message_text):
         return None
 
 def fetch_top_10_volume():
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "volume_desc",
-        "per_page": 10,
-        "page": 1,
-        "sparkline": "false"
-    }
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
+    # Primary Source: CoinGecko
     try:
-        res = requests.get(url, params=params, headers=headers, timeout=10)
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {"vs_currency": "usd", "order": "volume_desc", "per_page": 10, "page": 1, "sparkline": "false"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, params=params, headers=headers, timeout=8)
         data = res.json()
         
-        if isinstance(data, list):
-            formatted_data = []
-            for coin in data:
-                formatted_data.append({
-                    "symbol": coin["symbol"].upper() + "USDT",
-                    "lastPrice": coin["current_price"],
-                    "quoteVolume": coin["total_volume"],
-                    "priceChangePercent": coin.get("price_change_percentage_24h", 0.0)
+        if isinstance(data, list) and len(data) > 0:
+            return [{
+                "symbol": coin["symbol"].upper() + "USDT",
+                "lastPrice": coin["current_price"],
+                "quoteVolume": coin["total_volume"],
+                "priceChangePercent": coin.get("price_change_percentage_24h", 0.0)
+            } for coin in data]
+    except Exception:
+        pass
+
+    # Secondary Source Fallback: CryptoCompare API
+    try:
+        url = "https://min-api.cryptocompare.com/data/top/mktcapfull?limit=10&tsym=USD"
+        res = requests.get(url, timeout=8)
+        data = res.json().get("Data", [])
+        formatted = []
+        for coin in data:
+            raw = coin.get("RAW", {}).get("USD", {})
+            if raw:
+                formatted.append({
+                    "symbol": raw.get("FROMSYMBOL", "").upper() + "USDT",
+                    "lastPrice": raw.get("PRICE", 0.0),
+                    "quoteVolume": raw.get("VOLUME24HOURTO", 0.0),
+                    "priceChangePercent": raw.get("CHANGEPCT24HOUR", 0.0)
                 })
-            return formatted_data
-        else:
-            return []
-            
-    except Exception as e:
+        return formatted
+    except Exception:
         return []
 
 def run_signals_engine():
     top_coins = fetch_top_10_volume()
-    
     if not top_coins:
         return
 
-    for index, coin in enumerate(top_coins):
+    # 1. Dispatch VIP Signals
+    for coin in top_coins:
         symbol = coin["symbol"]
         price = float(coin["lastPrice"])
         volume = float(coin["quoteVolume"]) / 1_000_000
@@ -95,28 +102,38 @@ def run_signals_engine():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # Send to VIP Channel
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_signal)
-        time.sleep(1)
+        time.sleep(1.5)
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_signal)
-        time.sleep(2)
+        time.sleep(1.5)
 
-        # Send Free Preview to Free Channel (First 2 coins only)
-        if index < 2:
-            free_promo_text = (
-                f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{spot_signal}\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 *UNLOCK ALL 10 SPOT & FUTURES SIGNALS* 🔥\n\n"
-                f"💳 *Subscription Plans*:\n"
-                f"• 10 Days: $10 USDT\n"
-                f"• 20 Days: $19 USDT\n"
-                f"• 30 Days: $27 USDT\n\n"
-                f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
-            )
-            send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo_text)
-            time.sleep(2)
+    # 2. Dispatch Direct Free Preview Signal (Dedicated Execution)
+    if top_coins:
+        top_coin = top_coins[0]
+        f_symbol = top_coin["symbol"]
+        f_price = float(top_coin["lastPrice"])
+        f_vol = float(top_coin["quoteVolume"]) / 1_000_000
+        f_change = float(top_coin["priceChangePercent"])
+
+        free_promo_text = (
+            f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🟢 *[SPOT SIGNAL] {f_symbol}*\n\n"
+            f"📥 *Entry Range*: ${f_price}\n"
+            f"📊 *24h Vol*: ${f_vol:.2f}M | *Change*: {f_change:+.2f}%\n\n"
+            f"🎯 *Target 1*: ${round(f_price * 1.02, 4)} (+2.0%)\n"
+            f"🎯 *Target 2*: ${round(f_price * 1.045, 4)} (+4.5%)\n"
+            f"🎯 *Target 3*: ${round(f_price * 1.08, 4)} (+8.0%)\n"
+            f"⛔ *Stop Loss*: ${round(f_price * 0.965, 4)} (-3.5%)\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 *UNLOCK ALL 10 SPOT & FUTURES SIGNALS* 🔥\n\n"
+            f"💳 *Subscription Plans*:\n"
+            f"• 10 Days: $10 USDT\n"
+            f"• 20 Days: $19 USDT\n"
+            f"• 30 Days: $27 USDT\n\n"
+            f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
+        )
+        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo_text)
 
 def bot_loop():
     time.sleep(5)
