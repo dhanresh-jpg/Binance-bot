@@ -33,7 +33,6 @@ def fetch_market_data():
     headers = {"User-Agent": "Mozilla/5.0"}
     symbols = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "DOT"]
 
-    # Provider 1: CoinPaprika
     try:
         url = "https://api.coinpaprika.com/v1/tickers"
         res = requests.get(url, headers=headers, timeout=8)
@@ -61,7 +60,6 @@ def fetch_market_data():
     except Exception:
         pass
 
-    # Fallback Data Generator
     base_prices = {
         "BTCUSDT": 64500.0, "ETHUSDT": 3450.0, "SOLUSDT": 145.0, "BNBUSDT": 580.0, 
         "XRPUSDT": 0.58, "DOGEUSDT": 0.11, "ADAUSDT": 0.38, "AVAXUSDT": 26.0, 
@@ -110,14 +108,14 @@ def signal_engine():
             f"📊 <b>Analysis</b>: High Volume Breakout Pattern"
         )
 
-        # 1. Send to VIP Channel
+        # 1. Send to VIP Channel (All 10 coins -> 10 Spot & 10 Futures)
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
-        time.sleep(1.5)
+        time.sleep(1)
         send_telegram_msg(VIP_CHANNEL_ID, futures_text)
-        time.sleep(2)
+        time.sleep(1.5)
 
-        # 2. Send Preview to Free Channel (First 2 coins)
-        if index < 2:
+        # 2. Send Preview to Free Channel (Sirf pehle 1 coin ka Spot signal preview)
+        if index == 0:
             free_promo_text = (
                 f"🚀 <b>FREE PREVIEW SIGNAL</b> 🚀\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -130,14 +128,8 @@ def signal_engine():
                 f"• 30 Days: $27 USDT\n\n"
                 f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
             )
-            res_free = send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
-            
-            # Agar Free Channel me bhejte waqt error aaye toh alert VIP me dikhayega
-            if not res_free.get("ok"):
-                err_msg = res_free.get("description", "Unknown Error")
-                send_telegram_msg(VIP_CHANNEL_ID, f"⚠️ <b>Free Channel Error</b>: <code>{err_msg}</code>")
-            
-            time.sleep(2)
+            send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
+            time.sleep(1.5)
 
 def execution_loop():
     time.sleep(3)
