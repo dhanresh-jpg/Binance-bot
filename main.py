@@ -3,7 +3,6 @@ import time
 from flask import Flask
 import requests
 
-# Single Bot Token used for both channels to avoid permission blocks
 BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 
 VIP_CHANNEL_ID = "-1003836756507"
@@ -30,9 +29,32 @@ def send_telegram_msg(chat_id, text):
         return {"ok": False}
 
 def fetch_market_data():
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
-    # Provider 1: Public Crypto Compare Direct Ticker
+    # Primary API: Direct Binance Public Ticker (No Rate Limits / Never Blocked)
+    try:
+        url = "https://api.binance.com/api/v3/ticker/24hr"
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            # Filter top USDT volume pairs
+            usdt_pairs = [d for d in data if d['symbol'].endswith('USDT') and not d['symbol'].startswith('USD') and 'UP' not in d['symbol'] and 'DOWN' not in d['symbol']]
+            sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:10]
+            
+            result = []
+            for item in sorted_pairs:
+                result.append({
+                    "symbol": item["symbol"],
+                    "price": float(item["lastPrice"]),
+                    "volume": float(item["quoteVolume"]) / 1_000_000,
+                    "change": float(item["priceChangePercent"])
+                })
+            if len(result) > 0:
+                return result
+    except Exception:
+        pass
+
+    # Backup API: CryptoCompare Multi-Price Ticker
     try:
         url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH,SOL,BNB,XRP,DOGE,ADA,AVAX,LINK,DOT&tsyms=USD"
         res = requests.get(url, headers=headers, timeout=10)
@@ -51,38 +73,13 @@ def fetch_market_data():
     except Exception:
         pass
 
-    # Provider 2: CoinGecko Direct Fallback
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,binancecoin,ripple,dogecoin,cardano,avalanche-2,chainlink,polkadot&vs_currencies=usd"
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            mapping = {
-                "bitcoin": "BTC", "ethereum": "ETH", "solana": "SOL", "binancecoin": "BNB",
-                "ripple": "XRP", "dogecoin": "DOGE", "cardano": "ADA", "avalanche-2": "AVAX",
-                "chainlink": "LINK", "polkadot": "DOT"
-            }
-            result = []
-            for key, symbol in mapping.items():
-                if key in data:
-                    result.append({
-                        "symbol": symbol + "USDT",
-                        "price": float(data[key]["usd"]),
-                        "volume": 180.0,
-                        "change": 2.1
-                    })
-            if len(result) > 0:
-                return result
-    except Exception:
-        pass
-
     return []
 
 def signal_engine():
     coins = fetch_market_data()
     
     if not coins:
-        send_telegram_msg(VIP_CHANNEL_ID, "⚠️ *API Retrying...*")
+        send_telegram_msg(VIP_CHANNEL_ID, "⚠️ *API Re-connecting...*")
         return
 
     for index, coin in enumerate(coins):
@@ -113,13 +110,13 @@ def signal_engine():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Delivery (All 10 coins)
+        # VIP Channel Delivery (All 10 coins)
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
         time.sleep(1)
         send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
 
-        # Free Channel Delivery (First 2 coins only via VIP Bot)
+        # Free Channel Delivery (First 2 coins only)
         if index < 2:
             free_promo_text = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
@@ -137,7 +134,7 @@ def signal_engine():
             time.sleep(1.5)
 
 def execution_loop():
-    time.sleep(5)
+    time.sleep(3)
     while True:
         signal_engine()
         time.sleep(3600)
