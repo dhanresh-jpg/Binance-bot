@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot Service is Alive and Running!"
+    return "Bot Service is Active and Running!"
 
 def send_msg(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -25,35 +25,41 @@ def send_msg(token, chat_id, text):
         return {"ok": False, "error": str(e)}
 
 def fetch_crypto_data():
-    # Primary API: Binance Official Public API (Bypasses CoinGecko rate limit)
+    # Source 1: CryptoCompare API (No Geo-block, High Reliability)
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
+        url = "https://min-api.cryptocompare.com/data/top/mktcapfull?limit=10&tsym=USD"
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
-            data = res.json()
-            usdt_pairs = [d for d in data if d['symbol'].endswith('USDT') and not d['symbol'].startswith('USD')]
-            sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:10]
-            
-            result = []
-            for item in sorted_pairs:
-                result.append({
-                    "symbol": item["symbol"],
-                    "current_price": float(item["lastPrice"]),
-                    "total_volume": float(item["quoteVolume"]),
-                    "price_change_percentage_24h": float(item["priceChangePercent"])
-                })
-            return result
+            data = res.json().get("Data", [])
+            formatted = []
+            for item in data:
+                raw = item.get("RAW", {}).get("USD", {})
+                if raw:
+                    formatted.append({
+                        "symbol": raw.get("FROMSYMBOL", "") + "USDT",
+                        "current_price": float(raw.get("PRICE", 0)),
+                        "total_volume": float(raw.get("VOLUME24HOURTO", 0)),
+                        "price_change_percentage_24h": float(raw.get("CHANGEPCT24HOUR", 0))
+                    })
+            if formatted:
+                return formatted
     except Exception:
         pass
 
-    # Fallback API: CoinGecko
+    # Source 2: CoinGecko API Fallback
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {"vs_currency": "usd", "order": "volume_desc", "per_page": 10, "page": 1}
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, params=params, headers=headers, timeout=10)
         if res.status_code == 200:
-            return res.json()
+            data = res.json()
+            return [{
+                "symbol": coin["symbol"].upper() + "USDT",
+                "current_price": coin["current_price"],
+                "total_volume": coin["total_volume"],
+                "price_change_percentage_24h": coin.get("price_change_percentage_24h", 0.0)
+            } for coin in data]
     except Exception:
         pass
 
@@ -62,18 +68,15 @@ def fetch_crypto_data():
 def execute_signal_cycle():
     coins = fetch_crypto_data()
     
-    if not coins or not isinstance(coins, list):
-        send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, "⚠️ *Data Engine Alert*: Fetch Failed. Retrying in 1 min...")
+    if not coins:
+        send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, "⚠️ *Data Engine Alert*: Fetch Failed. Retrying...")
         return
 
     for index, coin in enumerate(coins):
-        symbol = coin["symbol"].upper()
-        if not symbol.endswith("USDT"):
-            symbol += "USDT"
-            
+        symbol = coin["symbol"]
         price = coin["current_price"]
         volume = float(coin["total_volume"]) / 1_000_000
-        change = float(coin.get("price_change_percentage_24h", 0.0))
+        change = float(coin["price_change_percentage_24h"])
 
         spot = (
             f"🟢 *[SPOT SIGNAL] {symbol}*\n\n"
@@ -97,13 +100,13 @@ def execute_signal_cycle():
             f"📊 *Analysis*: High Volume Breakout Pattern"
         )
 
-        # VIP Channels Receives All Signals
+        # Send to VIP Channel
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot)
         time.sleep(1)
         send_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures)
         time.sleep(1.5)
 
-        # Free Channel Receives First 2 Coins Only
+        # Send Free Preview to Free Channel (First 2 coins)
         if index < 2:
             promo = (
                 f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
