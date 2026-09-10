@@ -1,8 +1,8 @@
 import threading
 import time
+import random
 from flask import Flask
 import requests
-import random
 
 BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 
@@ -20,29 +20,30 @@ def send_telegram_msg(chat_id, text):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
     try:
         res = requests.post(url, json=payload, timeout=10)
         return res.json()
-    except Exception:
-        return {"ok": False}
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
 
 def fetch_market_data():
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     symbols = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "DOT"]
 
-    # Provider 1: CoinPaprika (Zero Cloud Block Engine)
+    # Provider 1: CoinPaprika
     try:
         url = "https://api.coinpaprika.com/v1/tickers"
         res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
             data = res.json()
-            mapping = {"BTC": "btc-bitcoin", "ETH": "eth-ethereum", "SOL": "sol-solana", 
-                       "BNB": "bnb-binance-coin", "XRP": "xrp-xrp", "DOGE": "doge-dogecoin", 
-                       "ADA": "ada-cardano", "AVAX": "avax-avalanche", "LINK": "link-chainlink", "DOT": "dot-polkadot"}
-            
+            mapping = {
+                "BTC": "btc-bitcoin", "ETH": "eth-ethereum", "SOL": "sol-solana", 
+                "BNB": "bnb-binance-coin", "XRP": "xrp-xrp", "DOGE": "doge-dogecoin", 
+                "ADA": "ada-cardano", "AVAX": "avax-avalanche", "LINK": "link-chainlink", "DOT": "dot-polkadot"
+            }
             result = []
             for s in symbols:
                 coin_id = mapping.get(s)
@@ -60,34 +61,15 @@ def fetch_market_data():
     except Exception:
         pass
 
-    # Provider 2: CryptoCompare Multi Ticker
-    try:
-        url = f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={','.join(symbols)}&tsyms=USD"
-        res = requests.get(url, headers=headers, timeout=8)
-        if res.status_code == 200:
-            data = res.json()
-            result = []
-            for s in symbols:
-                if s in data and "USD" in data[s]:
-                    result.append({
-                        "symbol": s + "USDT",
-                        "price": float(data[s]["USD"]),
-                        "volume": 190.0,
-                        "change": 1.85
-                    })
-            if len(result) >= 5:
-                return result
-    except Exception:
-        pass
-
-    # Fail-Safe Backup (Guarantees uninterrupted signals even under total API bans)
-    base_prices = {"BTCUSDT": 64500.0, "ETHUSDT": 3450.0, "SOLUSDT": 145.0, "BNBUSDT": 580.0, 
-                   "XRPUSDT": 0.58, "DOGEUSDT": 0.11, "ADAUSDT": 0.38, "AVAXUSDT": 26.0, 
-                   "LINKUSDT": 11.85, "DOTUSDT": 4.35}
+    # Fallback Data Generator
+    base_prices = {
+        "BTCUSDT": 64500.0, "ETHUSDT": 3450.0, "SOLUSDT": 145.0, "BNBUSDT": 580.0, 
+        "XRPUSDT": 0.58, "DOGEUSDT": 0.11, "ADAUSDT": 0.38, "AVAXUSDT": 26.0, 
+        "LINKUSDT": 11.85, "DOTUSDT": 4.35
+    }
     
     fallback_result = []
     for sym, price in base_prices.items():
-        # Inject small realistic micro-fluctuation
         var_price = price * (1 + random.uniform(-0.003, 0.003))
         fallback_result.append({
             "symbol": sym,
@@ -107,49 +89,55 @@ def signal_engine():
         change = coin["change"]
 
         spot_text = (
-            f"🟢 *[SPOT SIGNAL] {symbol}*\n\n"
-            f"📥 *Entry Range*: ${price:.4f}\n"
-            f"📊 *24h Vol*: ${volume:.2f}M | *Change*: {change:+.2f}%\n\n"
-            f"🎯 *Target 1*: ${round(price * 1.02, 4)} (+2.0%)\n"
-            f"🎯 *Target 2*: ${round(price * 1.045, 4)} (+4.5%)\n"
-            f"🎯 *Target 3*: ${round(price * 1.08, 4)} (+8.0%)\n"
-            f"⛔ *Stop Loss*: ${round(price * 0.965, 4)} (-3.5%)\n\n"
-            f"📈 *Analysis*: Top Volume Momentum"
+            f"🟢 <b>[SPOT SIGNAL] {symbol}</b>\n\n"
+            f"📥 <b>Entry Range</b>: ${price:.4f}\n"
+            f"📊 <b>24h Vol</b>: ${volume:.2f}M | <b>Change</b>: {change:+.2f}%\n\n"
+            f"🎯 <b>Target 1</b>: ${round(price * 1.02, 4)} (+2.0%)\n"
+            f"🎯 <b>Target 2</b>: ${round(price * 1.045, 4)} (+4.5%)\n"
+            f"🎯 <b>Target 3</b>: ${round(price * 1.08, 4)} (+8.0%)\n"
+            f"⛔ <b>Stop Loss</b>: ${round(price * 0.965, 4)} (-3.5%)\n\n"
+            f"📈 <b>Analysis</b>: Top Volume Momentum"
         )
 
         futures_text = (
-            f"⚡ *[FUTURES LONG] {symbol}*\n\n"
-            f"⚙️ *Leverage*: Cross 10x - 20x\n"
-            f"📥 *Entry*: ${price:.4f}\n\n"
-            f"🎯 *Target 1*: ${round(price * 1.015, 4)} (+15% @ 10x)\n"
-            f"🎯 *Target 2*: ${round(price * 1.03, 4)} (+30% @ 10x)\n"
-            f"🎯 *Target 3*: ${round(price * 1.05, 4)} (+50% @ 10x)\n"
-            f"⛔ *Stop Loss*: ${round(price * 0.985, 4)} (-15% @ 10x)\n\n"
-            f"📊 *Analysis*: High Volume Breakout Pattern"
+            f"⚡ <b>[FUTURES LONG] {symbol}</b>\n\n"
+            f"⚙️ <b>Leverage</b>: Cross 10x - 20x\n"
+            f"📥 <b>Entry</b>: ${price:.4f}\n\n"
+            f"🎯 <b>Target 1</b>: ${round(price * 1.015, 4)} (+15% @ 10x)\n"
+            f"🎯 <b>Target 2</b>: ${round(price * 1.03, 4)} (+30% @ 10x)\n"
+            f"🎯 <b>Target 3</b>: ${round(price * 1.05, 4)} (+50% @ 10x)\n"
+            f"⛔ <b>Stop Loss</b>: ${round(price * 0.985, 4)} (-15% @ 10x)\n\n"
+            f"📊 <b>Analysis</b>: High Volume Breakout Pattern"
         )
 
-        # VIP Channel Delivery
+        # 1. Send to VIP Channel
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
-        time.sleep(1)
-        send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
+        send_telegram_msg(VIP_CHANNEL_ID, futures_text)
+        time.sleep(2)
 
-        # Free Channel Delivery (First 2 Coins)
+        # 2. Send Preview to Free Channel (First 2 coins)
         if index < 2:
             free_promo_text = (
-                f"🚀 *FREE PREVIEW SIGNAL* 🚀\n"
+                f"🚀 <b>FREE PREVIEW SIGNAL</b> 🚀\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"{spot_text}\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 *UNLOCK ALL 10 SPOT & FUTURES SIGNALS* 🔥\n\n"
-                f"💳 *Subscription Plans*:\n"
+                f"🔥 <b>UNLOCK ALL 10 SPOT & FUTURES SIGNALS</b> 🔥\n\n"
+                f"💳 <b>Subscription Plans</b>:\n"
                 f"• 10 Days: $10 USDT\n"
                 f"• 20 Days: $19 USDT\n"
                 f"• 30 Days: $27 USDT\n\n"
-                f"👉 *Join VIP Bot*: @BinanceTop10_VIPBot"
+                f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
             )
-            send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
-            time.sleep(1.5)
+            res_free = send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
+            
+            # Agar Free Channel me bhejte waqt error aaye toh alert VIP me dikhayega
+            if not res_free.get("ok"):
+                err_msg = res_free.get("description", "Unknown Error")
+                send_telegram_msg(VIP_CHANNEL_ID, f"⚠️ <b>Free Channel Error</b>: <code>{err_msg}</code>")
+            
+            time.sleep(2)
 
 def execution_loop():
     time.sleep(3)
