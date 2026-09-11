@@ -5,7 +5,7 @@ import os
 import threading
 import traceback
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 # --- CONFIGURATION ---
 FREE_BOT_TOKEN = "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU"
@@ -15,7 +15,6 @@ FREE_CHANNEL_ID = "-1003924921868"
 VIP_CHANNEL_ID = "-1003836756507"
 
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
-ADMIN_USER_ID = 123456789  # Replace with your Telegram User ID if needed
 
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -29,12 +28,6 @@ def log_event(message):
         system_logs.pop(0)
     print(entry)
 
-PLANS = {
-    "10": {"days": 10, "price": "10 USDT", "name": "10 Days VIP"},
-    "20": {"days": 20, "price": "19 USDT", "name": "20 Days VIP"},
-    "30": {"days": 30, "price": "27 USDT", "name": "30 Days VIP"}
-}
-
 # --- DATABASE SETUP ---
 def init_db():
     try:
@@ -47,15 +40,20 @@ def init_db():
                 status TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS processed_txids (
+                txid TEXT PRIMARY KEY
+            )
+        ''')
         conn.commit()
         conn.close()
-        log_event("Database initialized successfully.")
+        log_event("Database & TXID tracker initialized.")
     except Exception as e:
         log_event(f"DB Error: {e}")
 
 init_db()
 
-# --- DATABASE OPERATIONS ---
+# --- DATABASE HELPERS ---
 def add_vip_member(user_id, days):
     try:
         conn = sqlite3.connect("vip_members.db")
@@ -75,20 +73,56 @@ def add_vip_member(user_id, days):
         log_event(f"DB Add Error: {e}")
         return None
 
-def get_member_status(user_id):
-    try:
-        conn = sqlite3.connect("vip_members.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT expiry_date, status FROM members WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            return row[0], row[1]
-    except Exception as e:
-        log_event(f"DB Get Error: {e}")
-    return None, None
+def is_txid_processed(txid):
+    conn = sqlite3.connect("vip_members.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT txid FROM processed_txids WHERE txid = ?", (txid,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
 
-# --- TELEGRAM SENDER HELPERS ---
+def mark_txid_processed(txid):
+    conn = sqlite3.connect("vip_members.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO processed_txids (txid) VALUES (?)", (txid,))
+    conn.commit()
+    conn.close()
+
+# --- TRON BLOCKCHAIN AUTOMATIC VERIFIER ---
+def verify_tron_txid(txid):
+    if is_txid_processed(txid):
+        return False, "This Transaction Hash (TXID) has already been used!"
+
+    url = f"https://api.trongrid.io/v1/accounts/{TRUST_WALLET_ADDRESS}/transactions/trc20"
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            for tx in data:
+                if tx.get("transaction_id") == txid:
+                    to_address = tx.get("to")
+                    value = float(tx.get("value", 0)) / 1_000_000  # USDT TRC20 Decimals
+                    
+                    if to_address == TRUST_WALLET_ADDRESS:
+                        if value >= 27.0:
+                            mark_txid_processed(txid)
+                            return True, (30, value)
+                        elif value >= 19.0:
+                            mark_txid_processed(txid)
+                            return True, (20, value)
+                        elif value >= 10.0:
+                            mark_txid_processed(txid)
+                            return True, (10, value)
+                        else:
+                            return False, f"Received {value} USDT, which is less than the minimum plan ($10)."
+            return False, "Transaction not found on TRON Network yet. Wait 1-2 minutes and try again."
+    except Exception as e:
+        log_event(f"TronGrid API Error: {e}")
+        return False, "Error checking Blockchain API. Please try again later."
+    
+    return False, "Transaction not found for this wallet address."
+
+# --- TELEGRAM API HELPER ---
 def send_telegram_msg(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -104,6 +138,17 @@ def send_telegram_msg(bot_token, chat_id, text):
         log_event(f"Telegram Exception ({chat_id}): {e}")
         return None
 
+def create_vip_invite_link():
+    url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/createChatInviteLink"
+    payload = {"chat_id": VIP_CHANNEL_ID, "member_limit": 1}
+    try:
+        res = requests.post(url, json=payload, timeout=8).json()
+        if res.get("ok"):
+            return res["result"]["invite_link"]
+    except Exception as e:
+        log_event(f"Invite Link Error: {e}")
+    return None
+
 # --- MARKET DATA & SIGNALS ---
 def fetch_binance_price(symbol):
     try:
@@ -113,7 +158,6 @@ def fetch_binance_price(symbol):
             return float(res.json()["price"])
     except Exception as e:
         log_event(f"Binance fetch fail for {symbol}: {e}")
-    
     fallback_prices = {"BTCUSDT": 62500.0, "ETHUSDT": 2450.0, "SOLUSDT": 135.0, "BNBUSDT": 550.0}
     return fallback_prices.get(symbol, 100.0)
 
@@ -176,9 +220,9 @@ def continuous_loop():
             generate_and_send_signals()
         except Exception as e:
             log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
-        time.sleep(14400) # Every 4 Hours
+        time.sleep(14400)
 
-# --- TELEGRAM BOT UPDATES / COMMANDS LISTENER ---
+# --- BOT COMMANDS LISTENER ---
 def process_bot_updates():
     offset = None
     while True:
@@ -191,7 +235,7 @@ def process_bot_updates():
                 for update in data.get("result", []):
                     offset = update["update_id"] + 1
                     msg = update.get("message", {})
-                    text = msg.get("text", "")
+                    text = msg.get("text", "").strip()
                     user_id = msg.get("from", {}).get("id")
 
                     if not text or not user_id:
@@ -199,11 +243,11 @@ def process_bot_updates():
 
                     if text == "/start":
                         welcome = (
-                            f"👋 <b>Welcome to Crypto VIP Signals Bot!</b>\n\n"
+                            f"👋 <b>Welcome to Crypto VIP Bot!</b>\n\n"
                             f"Commands:\n"
-                            f"🔹 /plans - View VIP Pricing\n"
-                            f"🔹 /pay - Deposit TRC20 Address\n"
-                            f"🔹 /status - Check Membership Validity"
+                            f"🔹 /plans - View Pricing Plans\n"
+                            f"🔹 /pay - Get USDT TRC20 Address\n"
+                            f"🔹 /verify TXID - Auto-Activate VIP Access"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, welcome)
 
@@ -213,43 +257,53 @@ def process_bot_updates():
                             f"🔸 <b>10 Days Access</b>: 10 USDT\n"
                             f"🔸 <b>20 Days Access</b>: 19 USDT\n"
                             f"🔸 <b>30 Days Access</b>: 27 USDT\n\n"
-                            f"👉 Type /pay to get the Deposit Address."
+                            f"👉 Send exact amount to deposit address using /pay"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt)
 
                     elif text == "/pay":
                         pay_txt = (
-                            f"💳 <b>USDT TRC-20 Payment Address</b>\n\n"
+                            f"💳 <b>USDT TRC-20 Address</b>:\n\n"
                             f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-                            f"⚠️ Send exact amount for your plan.\n"
-                            f"After payment, send your Transaction TXID/Screenshot here or to Admin."
+                            f"<b>Automatic Activation Instructions:</b>\n"
+                            f"1. Send exact USDT amount for your chosen plan.\n"
+                            f"2. Copy your Transaction Hash (TXID).\n"
+                            f"3. Send <code>/verify YOUR_TXID</code> to this bot."
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, pay_txt)
 
-                    elif text == "/status":
-                        expiry, status = get_member_status(user_id)
-                        if status == "ACTIVE":
-                            stat_txt = f"✅ <b>VIP Status</b>: ACTIVE\n⏳ <b>Expires On</b>: {expiry}"
-                        else:
-                            stat_txt = "❌ <b>VIP Status</b>: INACTIVE\nType /plans to join VIP."
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, stat_txt)
-
-                    elif text.startswith("/addmember"):
+                    elif text.startswith("/verify"):
                         parts = text.split()
-                        if len(parts) == 3:
-                            target_id = int(parts[1])
-                            days = int(parts[2])
-                            exp = add_vip_member(target_id, days)
-                            send_telegram_msg(VIP_BOT_TOKEN, user_id, f"✅ User {target_id} added until {exp}")
-                            send_telegram_msg(VIP_BOT_TOKEN, target_id, f"🎉 Your VIP Membership is activated until {exp}!")
+                        if len(parts) < 2:
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "⚠️ Format: <code>/verify YOUR_TXID_HERE</code>")
+                        else:
+                            txid = parts[1].strip()
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "🔍 Verifying transaction on TRON Blockchain...")
+                            
+                            is_valid, result = verify_tron_txid(txid)
+                            if is_valid:
+                                days, amount = result
+                                exp_date = add_vip_member(user_id, days)
+                                invite_link = create_vip_invite_link()
+                                
+                                success_msg = (
+                                    f"✅ <b>PAYMENT VERIFIED!</b>\n\n"
+                                    f"💰 Received: ${amount} USDT\n"
+                                    f"📅 Membership Duration: {days} Days\n"
+                                    f"⏳ Expiry Date: {exp_date}\n\n"
+                                    f"🚀 <b>Join VIP Channel Now</b>:\n{invite_link}"
+                                )
+                                send_telegram_msg(VIP_BOT_TOKEN, user_id, success_msg)
+                            else:
+                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"❌ Verification Failed:\n{result}")
 
         except Exception as e:
             time.sleep(2)
 
-# --- FLASK ENDPOINTS ---
+# --- FLASK SERVER ENDPOINTS ---
 @app.route('/')
 def home():
-    return "VIP & Free Engine Running."
+    return "Automated VIP Engine Active."
 
 @app.route('/logs')
 def get_logs():
