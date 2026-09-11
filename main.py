@@ -5,7 +5,7 @@ import os
 import threading
 import traceback
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 # --- CONFIGURATION ---
 FREE_BOT_TOKEN = "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU"
@@ -13,6 +13,9 @@ VIP_BOT_TOKEN = "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8"
 
 FREE_CHANNEL_ID = "-1003924921868"
 VIP_CHANNEL_ID = "-1003836756507"
+
+TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
+ADMIN_USER_ID = 123456789  # Replace with your Telegram User ID if needed
 
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -26,6 +29,13 @@ def log_event(message):
         system_logs.pop(0)
     print(entry)
 
+PLANS = {
+    "10": {"days": 10, "price": "10 USDT", "name": "10 Days VIP"},
+    "20": {"days": 20, "price": "19 USDT", "name": "20 Days VIP"},
+    "30": {"days": 30, "price": "27 USDT", "name": "30 Days VIP"}
+}
+
+# --- DATABASE SETUP ---
 def init_db():
     try:
         conn = sqlite3.connect("vip_members.db")
@@ -45,6 +55,40 @@ def init_db():
 
 init_db()
 
+# --- DATABASE OPERATIONS ---
+def add_vip_member(user_id, days):
+    try:
+        conn = sqlite3.connect("vip_members.db")
+        cursor = conn.cursor()
+        expiry = datetime.now(IST) + timedelta(days=days)
+        expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO members (user_id, expiry_date, status)
+            VALUES (?, ?, ?)
+        ''', (user_id, expiry_str, "ACTIVE"))
+        
+        conn.commit()
+        conn.close()
+        return expiry_str
+    except Exception as e:
+        log_event(f"DB Add Error: {e}")
+        return None
+
+def get_member_status(user_id):
+    try:
+        conn = sqlite3.connect("vip_members.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT expiry_date, status FROM members WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0], row[1]
+    except Exception as e:
+        log_event(f"DB Get Error: {e}")
+    return None, None
+
+# --- TELEGRAM SENDER HELPERS ---
 def send_telegram_msg(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -55,19 +99,14 @@ def send_telegram_msg(bot_token, chat_id, text):
     }
     try:
         res = requests.post(url, json=payload, timeout=8)
-        res_json = res.json()
-        if not res_json.get("ok"):
-            log_event(f"Telegram API Error ({chat_id}): {res_json.get('description')}")
-        else:
-            log_event(f"SUCCESS: Msg sent to {chat_id}")
-        return res_json
+        return res.json()
     except Exception as e:
         log_event(f"Telegram Exception ({chat_id}): {e}")
         return None
 
+# --- MARKET DATA & SIGNALS ---
 def fetch_binance_price(symbol):
     try:
-        # Fast endpoint with 3-second timeout
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
         res = requests.get(url, timeout=3)
         if res.status_code == 200:
@@ -75,7 +114,6 @@ def fetch_binance_price(symbol):
     except Exception as e:
         log_event(f"Binance fetch fail for {symbol}: {e}")
     
-    # Static fallback prices in case Binance blocks server
     fallback_prices = {"BTCUSDT": 62500.0, "ETHUSDT": 2450.0, "SOLUSDT": 135.0, "BNBUSDT": 550.0}
     return fallback_prices.get(symbol, 100.0)
 
@@ -88,7 +126,6 @@ def generate_and_send_signals():
         price = fetch_binance_price(sym)
         p_fmt = f"{price:.2f}" if price > 10 else f"{price:.4f}"
 
-        # VIP Spot Signal Format
         spot_msg = (
             f"🟢 <b>[VIP SPOT SIGNAL] {sym}</b>\n\n"
             f"📥 <b>Entry</b>: ${p_fmt}\n"
@@ -100,7 +137,6 @@ def generate_and_send_signals():
             f"📈 <b>Analysis</b>: High Volume Confirmation"
         )
 
-        # VIP Futures Signal Format
         futures_msg = (
             f"⚡ <b>[VIP FUTURES LONG] {sym}</b>\n\n"
             f"⚙️ <b>Leverage</b>: Cross 10x - 20x\n"
@@ -112,7 +148,6 @@ def generate_and_send_signals():
             f"📊 <b>Analysis</b>: RSI Bullish Divergence"
         )
 
-        # Send to VIP Channel
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg)
         time.sleep(1)
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg)
@@ -143,9 +178,78 @@ def continuous_loop():
             log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
         time.sleep(14400) # Every 4 Hours
 
+# --- TELEGRAM BOT UPDATES / COMMANDS LISTENER ---
+def process_bot_updates():
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates"
+            params = {"timeout": 10, "offset": offset}
+            res = requests.get(url, params=params, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    text = msg.get("text", "")
+                    user_id = msg.get("from", {}).get("id")
+
+                    if not text or not user_id:
+                        continue
+
+                    if text == "/start":
+                        welcome = (
+                            f"👋 <b>Welcome to Crypto VIP Signals Bot!</b>\n\n"
+                            f"Commands:\n"
+                            f"🔹 /plans - View VIP Pricing\n"
+                            f"🔹 /pay - Deposit TRC20 Address\n"
+                            f"🔹 /status - Check Membership Validity"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, welcome)
+
+                    elif text == "/plans":
+                        plans_txt = (
+                            f"💎 <b>VIP SUBSCRIPTION PLANS</b>\n\n"
+                            f"🔸 <b>10 Days Access</b>: 10 USDT\n"
+                            f"🔸 <b>20 Days Access</b>: 19 USDT\n"
+                            f"🔸 <b>30 Days Access</b>: 27 USDT\n\n"
+                            f"👉 Type /pay to get the Deposit Address."
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt)
+
+                    elif text == "/pay":
+                        pay_txt = (
+                            f"💳 <b>USDT TRC-20 Payment Address</b>\n\n"
+                            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                            f"⚠️ Send exact amount for your plan.\n"
+                            f"After payment, send your Transaction TXID/Screenshot here or to Admin."
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, pay_txt)
+
+                    elif text == "/status":
+                        expiry, status = get_member_status(user_id)
+                        if status == "ACTIVE":
+                            stat_txt = f"✅ <b>VIP Status</b>: ACTIVE\n⏳ <b>Expires On</b>: {expiry}"
+                        else:
+                            stat_txt = "❌ <b>VIP Status</b>: INACTIVE\nType /plans to join VIP."
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, stat_txt)
+
+                    elif text.startswith("/addmember"):
+                        parts = text.split()
+                        if len(parts) == 3:
+                            target_id = int(parts[1])
+                            days = int(parts[2])
+                            exp = add_vip_member(target_id, days)
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, f"✅ User {target_id} added until {exp}")
+                            send_telegram_msg(VIP_BOT_TOKEN, target_id, f"🎉 Your VIP Membership is activated until {exp}!")
+
+        except Exception as e:
+            time.sleep(2)
+
+# --- FLASK ENDPOINTS ---
 @app.route('/')
 def home():
-    return "Signal Engine Running Successfully."
+    return "VIP & Free Engine Running."
 
 @app.route('/logs')
 def get_logs():
@@ -157,6 +261,7 @@ def force_signal():
     return "Signals triggered! Check Telegram channels."
 
 threading.Thread(target=continuous_loop, daemon=True).start()
+threading.Thread(target=process_bot_updates, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
