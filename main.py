@@ -10,8 +10,12 @@ from flask import Flask, jsonify
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
-VIP_CHANNEL_ID = "-1003836756507"
-FREE_CHANNEL_ID = "-1003924921868"
+
+# Telegram Channel Usernames (IDs ki jagah Channel Usernames dalein)
+# Apne real Telegram Channel Usernames yahan replace karein:
+VIP_CHANNEL_ID = "@your_vip_channel_username"   # e.g., "@binance_vip_signals"
+FREE_CHANNEL_ID = "@your_free_channel_username" # e.g., "@binance_free_signals"
+
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 app = Flask(__name__)
@@ -26,19 +30,6 @@ def log_event(message):
     if len(system_logs) > 50:
         system_logs.pop(0)
     print(entry)
-
-PLANS = {
-    "plan_10": {"days": 10, "price": 10.0, "name": "10 Days VIP Access"},
-    "plan_20": {"days": 20, "price": 19.0, "name": "20 Days VIP Access"},
-    "plan_30": {"days": 30, "price": 27.0, "name": "30 Days VIP Access"}
-}
-
-pending_payments = {}
-daily_stats = {
-    "total_spot": 0, "total_futures": 0, "tp1_hits": 0, 
-    "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
-}
-batch_counter = 0
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -60,8 +51,8 @@ def init_db():
 
 init_db()
 
-# --- TELEGRAM HELPERS ---
-def send_telegram_msg(chat_id, text, reply_markup=None):
+# --- TELEGRAM API HELPERS ---
+def send_telegram_msg(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -69,15 +60,13 @@ def send_telegram_msg(chat_id, text, reply_markup=None):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=10)
         res_json = res.json()
         if not res_json.get("ok"):
             log_event(f"Telegram API Error ({chat_id}): {res_json.get('description')}")
         else:
-            log_event(f"Msg Sent Successfully to {chat_id}")
+            log_event(f"SUCCESS: Signal Posted to {chat_id}")
         return res_json
     except Exception as e:
         log_event(f"Telegram Exception ({chat_id}): {e}")
@@ -118,7 +107,7 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def get_accurate_market_signals():
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
     analyzed_coins = []
 
     for sym in symbols:
@@ -146,13 +135,12 @@ def get_accurate_market_signals():
     return analyzed_coins
 
 def process_and_send_signals():
-    log_event("Starting Signal Processing...")
+    log_event("Processing signals...")
     coins = get_accurate_market_signals()
     if not coins:
-        log_event("Failed to fetch coins market data.")
+        log_event("Failed to fetch Binance data.")
         return False
 
-    log_event(f"Analyzed {len(coins)} coins. Sending to Telegram channels...")
     first_spot_text, first_futures_text = "", ""
 
     for index, coin in enumerate(coins):
@@ -203,22 +191,17 @@ def process_and_send_signals():
         f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
     )
     send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
-    log_event("Batch fully sent!")
     return True
 
 def continuous_signal_loop():
-    log_event("Continuous loop started.")
-    time.sleep(2)
+    time.sleep(3)
     while True:
         try:
             process_and_send_signals()
         except Exception as e:
             log_event(f"Error in Loop: {e}\n{traceback.format_exc()}")
-        
-        log_event("Waiting 4 Hours...")
         time.sleep(14400)
 
-# --- WEB ENDPOINTS ---
 @app.route('/')
 def home():
     return "VIP Bot Operational!"
