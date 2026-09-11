@@ -3,6 +3,7 @@ import random
 import requests
 import sqlite3
 import os
+import threading
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -27,6 +28,7 @@ daily_stats = {
     "total_spot": 0, "total_futures": 0, "tp1_hits": 0, 
     "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
 }
+batch_counter = 0
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -198,8 +200,6 @@ def send_daily_report():
     send_telegram_msg(FREE_CHANNEL_ID, report_text)
     daily_stats = {"total_spot": 0, "total_futures": 0, "tp1_hits": 0, "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0}
 
-batch_counter = 0
-
 def run_scheduled_signal_job():
     global batch_counter, daily_stats
     coins = get_accurate_market_signals()
@@ -370,12 +370,16 @@ def home():
 
 # --- SCHEDULER INITIALIZATION ---
 scheduler = BackgroundScheduler()
-# Runs every 4 hours automatically
-scheduler.add_job(run_scheduled_signal_job, 'interval', hours=4, next_run_time=datetime.now())
+# First execution starts in 2 seconds, then repeats every 4 hours automatically
+scheduler.add_job(
+    run_scheduled_signal_job, 
+    'interval', 
+    hours=4, 
+    next_run_time=datetime.now(timezone.utc) + timedelta(seconds=2)
+)
 scheduler.start()
 
-# Start Polling Thread
-import threading
+# Start Telegram Polling Thread
 threading.Thread(target=telegram_polling_loop, daemon=True).start()
 
 if __name__ == "__main__":
