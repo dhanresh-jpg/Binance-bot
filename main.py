@@ -2,15 +2,18 @@ import threading
 import time
 import random
 import requests
-from datetime import datetime
-import pytz
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
+
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
 
 app = Flask(__name__)
+
+# IST Timezone (UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 daily_stats = {
     "total_spot": 0,
@@ -24,7 +27,7 @@ daily_stats = {
 
 @app.route('/')
 def home():
-    return "Automated Signal Engine Active & Awake!"
+    return "Automated Accurate 6-Hour Signal System Active!"
 
 def send_telegram_msg(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -68,6 +71,7 @@ def calculate_rsi(prices, period=14):
     
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
+    
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -83,6 +87,7 @@ def get_accurate_market_signals():
             current_price = closes[-1]
             rsi = calculate_rsi(closes)
             sma_20 = sum(closes[-20:]) / 20
+            
             vol_24h = (sum(volumes[-24:]) * current_price) / 1_000_000 if len(volumes) >= 24 else 150.0
             price_change = ((current_price - closes[0]) / closes[0]) * 100
 
@@ -107,6 +112,7 @@ def get_accurate_market_signals():
 
 def send_daily_report():
     global daily_stats
+    
     report_text = (
         f"📊 <b>24-HOUR VIP SIGNALS PERFORMANCE REPORT</b> 📊\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -128,13 +134,19 @@ def send_daily_report():
     send_telegram_msg(FREE_CHANNEL_ID, report_text)
 
     daily_stats = {
-        "total_spot": 0, "total_futures": 0, "tp1_hits": 0,
-        "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
+        "total_spot": 0,
+        "total_futures": 0,
+        "tp1_hits": 0,
+        "tp2_hits": 0,
+        "tp3_hits": 0,
+        "sl_hits": 0,
+        "total_gain_pct": 0.0
     }
 
 def signal_engine():
     global daily_stats
     coins = get_accurate_market_signals()
+
     if not coins:
         return
 
@@ -150,11 +162,15 @@ def signal_engine():
 
         p_fmt = f"{price:.2f}" if price > 10 else f"{price:.4f}"
 
-        t1_spot, t2_spot, t3_spot = price * 1.025, price * 1.050, price * 1.085
+        t1_spot = price * 1.025
+        t2_spot = price * 1.050
+        t3_spot = price * 1.085
         sl_spot = price * 0.960
 
-        t1_fut, t2_fut_sl = price * 1.015, price * 0.985
-        t2_fut_target, t3_fut_target = price * 1.035, price * 1.060
+        t1_fut = price * 1.015
+        t2_fut_sl = price * 0.985
+        t2_fut_target = price * 1.035
+        t3_fut_target = price * 1.060
 
         spot_text = (
             f"🟢 <b>[SPOT SIGNAL] {symbol}</b>\n\n"
@@ -194,8 +210,8 @@ def signal_engine():
             first_spot_text = spot_text
             first_futures_text = futures_text
 
-    # 5 Min Delay before Free Channel Preview
-    time.sleep(300)
+    delay_seconds = random.randint(300, 600)
+    time.sleep(delay_seconds)
 
     free_promo_text = (
         f"🚀 <b>FREE PREVIEW SIGNALS (DELAYED)</b> 🚀\n"
@@ -215,26 +231,16 @@ def signal_engine():
 
 def execution_loop():
     time.sleep(5)
-    # Server start hone par instant testing signal trigger hoga
-    signal_engine()
-    
-    ist = pytz.timezone('Asia/Kolkata')
-    last_run_hour = -1
-
+    batch_count = 0
     while True:
-        now = datetime.now(ist)
-        current_hour = now.hour
-        
-        # Signals schedule: 00:00, 06:00, 12:00, 18:00 IST
-        if current_hour in [0, 6, 12, 18] and current_hour != last_run_hour:
-            signal_engine()
-            last_run_hour = current_hour
-            
-            # Send Daily Performance Report at 00:00 midnight IST
-            if current_hour == 0:
-                send_daily_report()
-        
-        time.sleep(30)
+        signal_engine()
+        batch_count += 1
+
+        if batch_count >= 4:
+            send_daily_report()
+            batch_count = 0
+
+        time.sleep(21000)
 
 threading.Thread(target=execution_loop, daemon=True).start()
 
