@@ -1,4 +1,3 @@
-import threading
 import time
 import random
 import requests
@@ -6,6 +5,7 @@ import sqlite3
 import os
 from datetime import datetime, timezone, timedelta
 from flask import Flask
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
@@ -198,8 +198,10 @@ def send_daily_report():
     send_telegram_msg(FREE_CHANNEL_ID, report_text)
     daily_stats = {"total_spot": 0, "total_futures": 0, "tp1_hits": 0, "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0}
 
-def signal_engine():
-    global daily_stats
+batch_counter = 0
+
+def run_scheduled_signal_job():
+    global batch_counter, daily_stats
     coins = get_accurate_market_signals()
     if not coins:
         return
@@ -250,8 +252,6 @@ def signal_engine():
         if index == 0:
             first_spot_text, first_futures_text = spot_text, futures_text
 
-    time.sleep(random.randint(300, 600))
-
     free_promo_text = (
         f"🚀 <b>FREE PREVIEW SIGNALS (DELAYED)</b> 🚀\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -268,16 +268,10 @@ def signal_engine():
     )
     send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
 
-def execution_loop():
-    time.sleep(5)
-    batch_count = 0
-    while True:
-        signal_engine()
-        batch_count += 1
-        if batch_count >= 4:
-            send_daily_report()
-            batch_count = 0
-        time.sleep(21000)
+    batch_counter += 1
+    if batch_counter >= 6:
+        send_daily_report()
+        batch_counter = 0
 
 # --- TELEGRAM LONG POLLING ENGINE ---
 def process_update(update):
@@ -353,7 +347,6 @@ def process_update(update):
 
 def telegram_polling_loop():
     offset = 0
-    # Delete old webhook to enable Polling
     try:
         requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
     except Exception:
@@ -373,11 +366,17 @@ def telegram_polling_loop():
 
 @app.route('/')
 def home():
-    return "VIP Bot Operational via Long Polling!"
+    return "VIP Bot Operational via Scheduled Signals!"
 
-# Start Threads
+# --- SCHEDULER INITIALIZATION ---
+scheduler = BackgroundScheduler()
+# Runs every 4 hours automatically
+scheduler.add_job(run_scheduled_signal_job, 'interval', hours=4, next_run_time=datetime.now())
+scheduler.start()
+
+# Start Polling Thread
+import threading
 threading.Thread(target=telegram_polling_loop, daemon=True).start()
-threading.Thread(target=execution_loop, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
