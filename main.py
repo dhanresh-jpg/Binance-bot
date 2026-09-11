@@ -5,7 +5,7 @@ import requests
 import sqlite3
 import os
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
@@ -61,7 +61,6 @@ def add_vip_member(user_id, days):
         conn.close()
         return expiry_str
     except Exception as e:
-        print(f"DB Add Error: {e}")
         return "Active"
 
 # --- TELEGRAM API HELPERS ---
@@ -76,10 +75,9 @@ def send_telegram_msg(chat_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
-        res = requests.post(url, json=payload, timeout=10)
-        return res.json()
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
+        requests.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
 
 def create_single_use_invite_link():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
@@ -281,20 +279,12 @@ def execution_loop():
             batch_count = 0
         time.sleep(21000)
 
-# --- SERVER & WEBHOOK HANDLERS ---
-@app.route('/', methods=['GET', 'POST'])
-def handle_root():
-    if request.method == 'GET':
-        return "Binance VIP Bot Server Active & Running!", 200
+# --- TELEGRAM LONG POLLING ENGINE ---
+def process_update(update):
+    if "message" in update and "text" in update["message"]:
+        chat_id = update["message"]["chat"]["id"]
+        text = update["message"]["text"]
 
-    data = request.get_json(force=True, silent=True)
-    if not data:
-        return jsonify({"status": "no data"}), 200
-
-    if "message" in data and "text" in data["message"]:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"]["text"]
-        
         if text.startswith("/start"):
             welcome_text = (
                 "🚀 <b>Welcome to Binance Top 10 VIP Signals Bot</b>\n\n"
@@ -310,8 +300,8 @@ def handle_root():
             }
             send_telegram_msg(chat_id, welcome_text, reply_markup=keyboard)
 
-    if "callback_query" in data:
-        query = data["callback_query"]
+    if "callback_query" in update:
+        query = update["callback_query"]
         user_id = query["from"]["id"]
         cb_data = query["data"]
 
@@ -361,12 +351,32 @@ def handle_root():
             else:
                 send_telegram_msg(user_id, "⚠️ No active payment found. Send /start to select a plan.")
 
-    return jsonify({"status": "ok"}), 200
+def telegram_polling_loop():
+    offset = 0
+    # Delete old webhook to enable Polling
+    try:
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+    except Exception:
+        pass
 
-@app.route('/telegram_webhook', methods=['GET', 'POST'])
-def handle_webhook_alias():
-    return handle_root()
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            res = requests.get(url, timeout=25)
+            if res.status_code == 200:
+                updates = res.json().get("result", [])
+                for update in updates:
+                    offset = update["update_id"] + 1
+                    process_update(update)
+        except Exception:
+            time.sleep(3)
 
+@app.route('/')
+def home():
+    return "VIP Bot Operational via Long Polling!"
+
+# Start Threads
+threading.Thread(target=telegram_polling_loop, daemon=True).start()
 threading.Thread(target=execution_loop, daemon=True).start()
 
 if __name__ == "__main__":
