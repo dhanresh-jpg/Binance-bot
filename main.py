@@ -10,8 +10,8 @@ BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
 
-# Trust Wallet USDT Address (Replace with your actual USDT-BEP20 or TRC20 Address)
-TRUST_WALLET_ADDRESS = "YOUR_TRUST_WALLET_USDT_ADDRESS_HERE"
+# Your Trust Wallet USDT (TRC20) Address
+TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -22,6 +22,9 @@ PLANS = {
     "plan_30": {"days": 30, "price": 27.0, "name": "30 Days VIP Access"}
 }
 
+# Stores active payment checks: { user_id: { "amount": 10.0, "timestamp": 1234567 } }
+pending_payments = {}
+
 daily_stats = {
     "total_spot": 0, "total_futures": 0, "tp1_hits": 0, 
     "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
@@ -29,7 +32,7 @@ daily_stats = {
 
 @app.route('/')
 def home():
-    return "Automated Accurate Signals & Trust Wallet Payment Bot Active!"
+    return "Automated Signals & TRC20 Auto-Payment Bot Active!"
 
 # --- TELEGRAM API HELPERS ---
 def send_telegram_msg(chat_id, text, reply_markup=None):
@@ -53,7 +56,7 @@ def create_single_use_invite_link():
     payload = {
         "chat_id": VIP_CHANNEL_ID,
         "member_limit": 1,
-        "expire_date": int(time.time()) + 86400 # Link valid for 24h
+        "expire_date": int(time.time()) + 86400  # Valid for 24 hours
     }
     try:
         res = requests.post(url, json=payload, timeout=10).json()
@@ -62,6 +65,29 @@ def create_single_use_invite_link():
     except Exception:
         pass
     return None
+
+# --- BLOCKCHAIN AUTO-VERIFICATION (TRONSCAN API) ---
+def check_trc20_payment(expected_amount, start_timestamp):
+    """Monitors TRON blockchain for incoming USDT-TRC20 payments to Trust Wallet"""
+    url = f"https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=20&start=0&sort=-timestamp&count=true&relatedAddress={TRUST_WALLET_ADDRESS}"
+    try:
+        res = requests.get(url, timeout=8)
+        if res.status_code == 200:
+            data = res.json().get("token_transfers", [])
+            for tx in data:
+                # Check USDT contract, receiver address, and timestamp after payment request
+                if (
+                    tx.get("to_address") == TRUST_WALLET_ADDRESS and
+                    tx.get("tokenInfo", {}).get("tokenSymbol") == "USDT"
+                ):
+                    tx_time = tx.get("block_ts", 0) / 1000
+                    amount = float(tx.get("quant", 0)) / 1_000_000  # Convert 6 decimals
+                    
+                    if tx_time >= (start_timestamp - 60) and abs(amount - expected_amount) < 0.5:
+                        return True
+    except Exception:
+        pass
+    return False
 
 # --- TECHNICAL ANALYSIS & SIGNAL ENGINE ---
 def fetch_binance_klines(symbol):
@@ -201,7 +227,7 @@ def signal_engine():
         if index == 0:
             first_spot_text, first_futures_text = spot_text, futures_text
 
-    # 5-10 Min Delay for Free Preview
+    # 5-10 Min Delay for Free Channel Preview
     time.sleep(random.randint(300, 600))
 
     free_promo_text = (
@@ -231,7 +257,7 @@ def execution_loop():
             batch_count = 0
         time.sleep(21000)
 
-# --- BOT TELEGRAM INTERACTION ---
+# --- BOT INTERACTION & WEBHOOK ---
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
@@ -241,9 +267,9 @@ def telegram_webhook():
         
         if text.startswith("/start"):
             welcome_text = (
-                "🚀 <b>Welcome to Binance Top 10 VIP Signals</b>\n\n"
+                "🚀 <b>Welcome to Binance Top 10 VIP Signals Bot</b>\n\n"
                 "Get 24/7 High-Accuracy Spot & Futures Signals.\n\n"
-                "💳 <b>Select a VIP Plan to subscribe</b>:"
+                "💳 <b>Select a VIP Plan to subscribe automatically</b>:"
             )
             keyboard = {
                 "inline_keyboard": [
@@ -263,27 +289,44 @@ def telegram_webhook():
             plan_key = cb_data.replace("buy_", "")
             plan = PLANS[plan_key]
             
+            pending_payments[user_id] = {
+                "amount": plan["price"],
+                "timestamp": time.time(),
+                "plan": plan["name"]
+            }
+
             pay_text = (
-                f"💳 <b>Payment Details ({plan['name']})</b>\n\n"
-                f"<b>Amount</b>: ${plan['price']} USDT\n"
-                f"<b>Network</b>: USDT (BEP20 / TRC20)\n\n"
-                f"📍 <b>Send exact payment to address:</b>\n"
+                f"💳 <b>Payment Invoice ({plan['name']})</b>\n\n"
+                f"<b>Amount</b>: <code>{plan['price']}</code> USDT\n"
+                f"<b>Network</b>: TRC20 (TRON)\n\n"
+                f"📍 <b>Deposit Address</b>:\n"
                 f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-                f"<i>After sending payment, click the button below to confirm.</i>"
+                f"⚠️ <i>Please send the exact amount. Once transferred, tap the button below to verify automatically via TRON blockchain.</i>"
             )
-            keyboard = {"inline_keyboard": [[{"text": "✅ I Have Paid", "callback_data": f"confirm_{plan_key}"}]]}
+            keyboard = {"inline_keyboard": [[{"text": "🔄 Check My Payment", "callback_data": "check_payment"}]]}
             send_telegram_msg(user_id, pay_text, reply_markup=keyboard)
 
-        elif cb_data.startswith("confirm_"):
-            invite_link = create_single_use_invite_link()
-            if invite_link:
-                success_text = (
-                    f"✅ <b>Payment Verified!</b>\n\n"
-                    f"Welcome to VIP!\n\n"
-                    f"👉 <b>Join VIP Channel</b>: {invite_link}\n\n"
-                    f"<i>Note: This link is unique and valid for 1 join only.</i>"
-                )
-                send_telegram_msg(user_id, success_text)
+        elif cb_data == "check_payment":
+            p_data = pending_payments.get(user_id)
+            if p_data:
+                is_paid = check_trc20_payment(p_data["amount"], p_data["timestamp"])
+                if is_paid:
+                    invite_link = create_single_use_invite_link()
+                    if invite_link:
+                        success_text = (
+                            f"✅ <b>PAYMENT CONFIRMED!</b>\n\n"
+                            f"Welcome to Binance Top 10 VIP Channel!\n\n"
+                            f"👉 <b>Join VIP Channel</b>: {invite_link}\n\n"
+                            f"<i>Note: This invite link is single-use and valid for 1 join only.</i>"
+                        )
+                        send_telegram_msg(user_id, success_text)
+                        del pending_payments[user_id]
+                    else:
+                        send_telegram_msg(user_id, "⚠️ Error generating VIP link. Please contact support.")
+                else:
+                    send_telegram_msg(user_id, "⏳ <b>Payment not detected yet!</b>\n\nPlease complete the transfer to your Trust Wallet address and try clicking 'Check My Payment' again in a minute.")
+            else:
+                send_telegram_msg(user_id, "⚠️ No active payment order found. Please send /start to select a plan.")
 
     return jsonify({"status": "ok"})
 
