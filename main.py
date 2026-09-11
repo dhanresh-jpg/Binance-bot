@@ -235,8 +235,9 @@ def generate_and_send_signals():
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{first_fut}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔥 <b>GET ALL INSTANT SIGNALS IN VIP</b> 🔥\n\n"
-            f"👉 Join VIP: @BinanceTop10_VIPBot"
+            f"🔥 <b>GET ALL 24/7 INSTANT SIGNALS IN VIP</b> 🔥\n\n"
+            f"👉 <b>Join VIP Bot:</b> @BinanceTop10_VIPBot\n"
+            f"👉 <b>Direct Link:</b> https://t.me/BinanceTop10_VIPBot"
         )
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo)
 
