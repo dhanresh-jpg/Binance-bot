@@ -116,7 +116,7 @@ def check_trc20_payment(expected_amount, start_timestamp):
         pass
     return False
 
-# --- SIGNAL ENGINE & TECHNICAL ANALYSIS ---
+# --- SIGNAL ENGINE ---
 def fetch_binance_klines(symbol):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
@@ -363,12 +363,10 @@ def handle_root():
 
     return jsonify({"status": "ok"}), 200
 
-# Endpoint to prevent 404 if path is accessed directly
 @app.route('/telegram_webhook', methods=['GET', 'POST'])
 def handle_webhook_alias():
     return handle_root()
 
-# Start background signal generator thread
 threading.Thread(target=execution_loop, daemon=True).start()
 
 if __name__ == "__main__":
