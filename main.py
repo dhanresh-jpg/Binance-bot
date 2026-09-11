@@ -235,7 +235,8 @@ def generate_and_send_signals():
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{first_fut}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔥 <b>GET ALL 24/7 INSTANT SIGNALS IN VIP</b> 🔥\n\n"
+            f"📢 <b>Share Free Channel:</b> https://t.me/BinanceTop10Free\n\n"
+            f"🔥 <b>GET ALL 24/7 INSTANT SIGNALS IN VIP</b> 🔥\n"
             f"👉 <b>Join VIP Bot:</b> @BinanceTop10_VIPBot\n"
             f"👉 <b>Direct Link:</b> https://t.me/BinanceTop10_VIPBot"
         )
