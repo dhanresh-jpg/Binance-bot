@@ -3,16 +3,15 @@ import time
 import random
 import requests
 from datetime import datetime
+import pytz
 from flask import Flask
 
 BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
-
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
 
 app = Flask(__name__)
 
-# Daily Performance Tracking Data
 daily_stats = {
     "total_spot": 0,
     "total_futures": 0,
@@ -25,7 +24,7 @@ daily_stats = {
 
 @app.route('/')
 def home():
-    return "Automated Accurate 6-Hour Signal System Active!"
+    return "Automated Signal Engine Active & Awake!"
 
 def send_telegram_msg(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -69,7 +68,6 @@ def calculate_rsi(prices, period=14):
     
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
-    
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -85,7 +83,6 @@ def get_accurate_market_signals():
             current_price = closes[-1]
             rsi = calculate_rsi(closes)
             sma_20 = sum(closes[-20:]) / 20
-            
             vol_24h = (sum(volumes[-24:]) * current_price) / 1_000_000 if len(volumes) >= 24 else 150.0
             price_change = ((current_price - closes[0]) / closes[0]) * 100
 
@@ -109,9 +106,7 @@ def get_accurate_market_signals():
     return analyzed_coins
 
 def send_daily_report():
-    """Generates and posts 24 Hours Performance Report to VIP and Free Channels"""
     global daily_stats
-    
     report_text = (
         f"📊 <b>24-HOUR VIP SIGNALS PERFORMANCE REPORT</b> 📊\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -128,33 +123,24 @@ def send_daily_report():
         f"👉 <b>Bot</b>: @BinanceTop10_VIPBot"
     )
 
-    # Post Report to Both Channels
     send_telegram_msg(VIP_CHANNEL_ID, report_text)
     time.sleep(2)
     send_telegram_msg(FREE_CHANNEL_ID, report_text)
 
-    # Reset daily stats for next 24h
     daily_stats = {
-        "total_spot": 0,
-        "total_futures": 0,
-        "tp1_hits": 0,
-        "tp2_hits": 0,
-        "tp3_hits": 0,
-        "sl_hits": 0,
-        "total_gain_pct": 0.0
+        "total_spot": 0, "total_futures": 0, "tp1_hits": 0,
+        "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
     }
 
 def signal_engine():
     global daily_stats
     coins = get_accurate_market_signals()
-
     if not coins:
         return
 
     first_spot_text = ""
     first_futures_text = ""
 
-    # 1. Deliver ALL Signals to VIP Channel First
     for index, coin in enumerate(coins):
         symbol = coin["symbol"]
         price = coin["price"]
@@ -164,15 +150,11 @@ def signal_engine():
 
         p_fmt = f"{price:.2f}" if price > 10 else f"{price:.4f}"
 
-        t1_spot = price * 1.025
-        t2_spot = price * 1.050
-        t3_spot = price * 1.085
+        t1_spot, t2_spot, t3_spot = price * 1.025, price * 1.050, price * 1.085
         sl_spot = price * 0.960
 
-        t1_fut = price * 1.015
-        t2_fut_sl = price * 0.985
-        t2_fut_target = price * 1.035
-        t3_fut_target = price * 1.060
+        t1_fut, t2_fut_sl = price * 1.015, price * 0.985
+        t2_fut_target, t3_fut_target = price * 1.035, price * 1.060
 
         spot_text = (
             f"🟢 <b>[SPOT SIGNAL] {symbol}</b>\n\n"
@@ -196,13 +178,11 @@ def signal_engine():
             f"📊 <b>Analysis</b>: {analysis_text}"
         )
 
-        # Send VIP Signals
         send_telegram_msg(VIP_CHANNEL_ID, spot_text)
         time.sleep(1.2)
         send_telegram_msg(VIP_CHANNEL_ID, futures_text)
         time.sleep(1.5)
 
-        # Update Daily Stats Counter
         daily_stats["total_spot"] += 1
         daily_stats["total_futures"] += 1
         daily_stats["tp1_hits"] += random.choice([1, 2])
@@ -210,16 +190,13 @@ def signal_engine():
         daily_stats["tp3_hits"] += random.choice([1, 0])
         daily_stats["total_gain_pct"] += random.uniform(8.0, 18.0)
 
-        # Save first signal for free channel delayed post
         if index == 0:
             first_spot_text = spot_text
             first_futures_text = futures_text
 
-    # 2. Wait 5 to 10 Minutes before sending Free Preview Signal
-    delay_seconds = random.randint(300, 600)  # 5 min (300s) to 10 min (600s)
-    time.sleep(delay_seconds)
+    # 5 Min Delay before Free Channel Preview
+    time.sleep(300)
 
-    # 3. Post Free Channel Preview (1 Spot & 1 Futures)
     free_promo_text = (
         f"🚀 <b>FREE PREVIEW SIGNALS (DELAYED)</b> 🚀\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -238,18 +215,26 @@ def signal_engine():
 
 def execution_loop():
     time.sleep(5)
-    batch_count = 0
+    # Server start hone par instant testing signal trigger hoga
+    signal_engine()
+    
+    ist = pytz.timezone('Asia/Kolkata')
+    last_run_hour = -1
+
     while True:
-        signal_engine()
-        batch_count += 1
-
-        # 4 Batches = 24 Hours (Since each batch is spaced 6 hours apart)
-        if batch_count >= 4:
-            send_daily_report()
-            batch_count = 0
-
-        # Wait 6 Hours (21,600 Seconds) minus the 5-10 min delay spent
-        time.sleep(21000)
+        now = datetime.now(ist)
+        current_hour = now.hour
+        
+        # Signals schedule: 00:00, 06:00, 12:00, 18:00 IST
+        if current_hour in [0, 6, 12, 18] and current_hour != last_run_hour:
+            signal_engine()
+            last_run_hour = current_hour
+            
+            # Send Daily Performance Report at 00:00 midnight IST
+            if current_hour == 0:
+                send_daily_report()
+        
+        time.sleep(30)
 
 threading.Thread(target=execution_loop, daemon=True).start()
 
