@@ -149,37 +149,38 @@ def create_vip_invite_link():
         log_event(f"Invite Link Error: {e}")
     return None
 
-# --- ACCURATE MULTI-SOURCE MARKET DATA FETCHING ---
+# --- ACCURATE MULTI-EXCHANGE MARKET DATA FETCHING ---
 def fetch_binance_price(symbol):
-    # Primary Source: Binance Main API
+    # 1. Primary Source: Bybit Public API (Cloud Friendly)
+    try:
+        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}"
+        res = requests.get(url, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            list_data = data.get("result", {}).get("list", [])
+            if list_data:
+                return float(list_data[0]["lastPrice"])
+    except Exception as e:
+        log_event(f"Bybit Fetch Fail for {symbol}: {e}")
+
+    # 2. Secondary Source: Binance Ticker API
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
             return float(res.json()["price"])
     except Exception as e:
-        log_event(f"Binance Primary Fetch Fail for {symbol}: {e}")
+        log_event(f"Binance Main Fetch Fail for {symbol}: {e}")
 
-    # Backup Source 1: Binance Alternate API Endpoint
+    # 3. Tertiary Source: KuCoin Public API
     try:
-        url = f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}"
+        kc_symbol = symbol.replace("USDT", "-USDT")
+        url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={kc_symbol}"
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
-            return float(res.json()["price"])
+            return float(res.json()["data"]["price"])
     except Exception as e:
-        log_event(f"Binance Backup Fetch Fail for {symbol}: {e}")
-
-    # Backup Source 2: CoinGecko API Fallback
-    try:
-        cg_map = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "BNBUSDT": "binancecoin"}
-        coin_id = cg_map.get(symbol)
-        if coin_id:
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                return float(res.json()[coin_id]["usd"])
-    except Exception as e:
-        log_event(f"CoinGecko Fetch Fail for {symbol}: {e}")
+        log_event(f"KuCoin Fetch Fail for {symbol}: {e}")
 
     return None
 
