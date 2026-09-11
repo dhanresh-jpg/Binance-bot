@@ -25,9 +25,12 @@ daily_stats = {
     "total_gain_pct": 0.0
 }
 
+# Recently sent coins tracker to avoid duplicate signals
+recently_sent_coins = []
+
 @app.route('/')
 def home():
-    return "Automated Accurate 6-Hour Signal System Active!"
+    return "Automated Accurate Non-Repeating 6-Hour Signal System Active!"
 
 def send_telegram_msg(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -78,10 +81,34 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def get_accurate_market_signals():
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
+    global recently_sent_coins
+
+    # Top Crypto Pairs List
+    all_symbols = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", 
+        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+        "NEARUSDT", "APTUSDT", "SUIUSDT", "MATICUSDT", "LTCUSDT",
+        "TRXUSDT", "ATOMUSDT", "INJUSDT", "FETUSDT", "ARBUSDT"
+    ]
+
+    # Filter out recently sent coins
+    available_symbols = [s for s in all_symbols if s not in recently_sent_coins]
+
+    # If too few unique coins left, reset history to allow fresh cycle
+    if len(available_symbols) < 5:
+        recently_sent_coins.clear()
+        available_symbols = all_symbols
+
+    # Shuffle to pick dynamic unique coins each cycle
+    random.shuffle(available_symbols)
+
     analyzed_coins = []
 
-    for sym in symbols:
+    for sym in available_symbols:
+        # Limit batch size to 5-10 unique signals per batch
+        if len(analyzed_coins) >= 8:
+            break
+
         closes, volumes = fetch_binance_klines(sym)
         if closes and len(closes) >= 20:
             current_price = closes[-1]
@@ -106,6 +133,10 @@ def get_accurate_market_signals():
                 "rsi": round(rsi, 1),
                 "analysis": trend
             })
+
+            # Add to history to avoid repeating in next cycle
+            recently_sent_coins.append(sym)
+
         time.sleep(0.2)
 
     return analyzed_coins
@@ -213,21 +244,22 @@ def signal_engine():
     delay_seconds = random.randint(300, 600)
     time.sleep(delay_seconds)
 
-    free_promo_text = (
-        f"🚀 <b>FREE PREVIEW SIGNALS (DELAYED)</b> 🚀\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{first_spot_text}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{first_futures_text}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 <b>GET REAL-TIME INSTANT SIGNALS IN VIP</b> 🔥\n\n"
-        f"💳 <b>Subscription Plans</b>:\n"
-        f"• 10 Days: $10 USDT\n"
-        f"• 20 Days: $19 USDT\n"
-        f"• 30 Days: $27 USDT\n\n"
-        f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
-    )
-    send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
+    if first_spot_text and first_futures_text:
+        free_promo_text = (
+            f"🚀 <b>FREE PREVIEW SIGNALS (DELAYED)</b> 🚀\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{first_spot_text}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{first_futures_text}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 <b>GET REAL-TIME INSTANT SIGNALS IN VIP</b> 🔥\n\n"
+            f"💳 <b>Subscription Plans</b>:\n"
+            f"• 10 Days: $10 USDT\n"
+            f"• 20 Days: $19 USDT\n"
+            f"• 30 Days: $27 USDT\n\n"
+            f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
+        )
+        send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
 
 def execution_loop():
     time.sleep(5)
@@ -237,14 +269,10 @@ def execution_loop():
         batch_count += 1
 
         if batch_count >= 4:
-            # 4th batch ke exact 30 mins baad report jayegi
-            time.sleep(1800)
             send_daily_report()
             batch_count = 0
-            # Total 6 hrs (21000s) me se 30 mins (1800s) minus karke wait karenge
-            time.sleep(19200)
-        else:
-            time.sleep(21000)
+
+        time.sleep(21000)
 
 threading.Thread(target=execution_loop, daemon=True).start()
 
