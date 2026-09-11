@@ -237,10 +237,14 @@ def execution_loop():
         batch_count += 1
 
         if batch_count >= 4:
+            # 4th batch ke exact 30 mins baad report jayegi
+            time.sleep(1800)
             send_daily_report()
             batch_count = 0
-
-        time.sleep(21000)
+            # Total 6 hrs (21000s) me se 30 mins (1800s) minus karke wait karenge
+            time.sleep(19200)
+        else:
+            time.sleep(21000)
 
 threading.Thread(target=execution_loop, daemon=True).start()
 
