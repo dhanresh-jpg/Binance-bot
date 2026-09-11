@@ -10,12 +10,8 @@ from flask import Flask, jsonify
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
-
-# Telegram Channel Usernames (IDs ki jagah Channel Usernames dalein)
-# Apne real Telegram Channel Usernames yahan replace karein:
-VIP_CHANNEL_ID = "@your_vip_channel_username"   # e.g., "@binance_vip_signals"
-FREE_CHANNEL_ID = "@your_free_channel_username" # e.g., "@binance_free_signals"
-
+VIP_CHANNEL_ID = "-1003836756507"
+FREE_CHANNEL_ID = "-1003924921868"
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 app = Flask(__name__)
@@ -66,7 +62,7 @@ def send_telegram_msg(chat_id, text):
         if not res_json.get("ok"):
             log_event(f"Telegram API Error ({chat_id}): {res_json.get('description')}")
         else:
-            log_event(f"SUCCESS: Signal Posted to {chat_id}")
+            log_event(f"SUCCESS: Posted to {chat_id}")
         return res_json
     except Exception as e:
         log_event(f"Telegram Exception ({chat_id}): {e}")
@@ -200,6 +196,8 @@ def continuous_signal_loop():
             process_and_send_signals()
         except Exception as e:
             log_event(f"Error in Loop: {e}\n{traceback.format_exc()}")
+        
+        # 4 Hours Interval (14400 seconds)
         time.sleep(14400)
 
 @app.route('/')
@@ -215,6 +213,7 @@ def force_signal():
     threading.Thread(target=process_and_send_signals, daemon=True).start()
     return "Instant Signal Processing Triggered! Check Telegram."
 
+# Start background worker on launch
 threading.Thread(target=continuous_signal_loop, daemon=True).start()
 
 if __name__ == "__main__":
