@@ -251,7 +251,36 @@ def continuous_loop():
             log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
         time.sleep(14400)  # Exactly 4 Hours
 
-# --- BOT COMMANDS LISTENER ---
+# --- FREE BOT LISTENER ---
+def process_free_bot_updates():
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{FREE_BOT_TOKEN}/getUpdates"
+            params = {"timeout": 10, "offset": offset}
+            res = requests.get(url, params=params, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    user_id = msg.get("from", {}).get("id")
+
+                    if not user_id:
+                        continue
+
+                    welcome_free = (
+                        f"👋 <b>Welcome to Binance Top 10 Signals!</b>\n\n"
+                        f"📢 <b>Join Our Free Signals Channel:</b>\n"
+                        f"https://t.me/BinanceTop10Free\n\n"
+                        f"💎 <b>Upgrade To VIP Bot (Auto Payment):</b>\n"
+                        f"@BinanceTop10_VIPBot"
+                    )
+                    send_telegram_msg(FREE_BOT_TOKEN, user_id, welcome_free)
+        except Exception:
+            time.sleep(2)
+
+# --- VIP BOT LISTENER ---
 def process_bot_updates():
     offset = None
     while True:
@@ -344,6 +373,7 @@ def force_signal():
     return "Signals triggered! Check Telegram channels."
 
 threading.Thread(target=continuous_loop, daemon=True).start()
+threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
 
 if __name__ == "__main__":
