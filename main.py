@@ -8,10 +8,13 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify
 
-# --- CONFIGURATION ---
-BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
-VIP_CHANNEL_ID = "-1003836756507"
+# --- CONFIGURATION (UPDATED TOKENS & IDS) ---
+FREE_BOT_TOKEN = "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU"
+VIP_BOT_TOKEN = "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8"
+
 FREE_CHANNEL_ID = "-1003924921868"
+VIP_CHANNEL_ID = "-1003836756507"
+
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 app = Flask(__name__)
@@ -26,6 +29,14 @@ def log_event(message):
     if len(system_logs) > 50:
         system_logs.pop(0)
     print(entry)
+
+PLANS = {
+    "plan_10": {"days": 10, "price": 10.0, "name": "10 Days VIP Access"},
+    "plan_20": {"days": 20, "price": 19.0, "name": "20 Days VIP Access"},
+    "plan_30": {"days": 30, "price": 27.0, "name": "30 Days VIP Access"}
+}
+
+pending_payments = {}
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -47,22 +58,24 @@ def init_db():
 
 init_db()
 
-# --- TELEGRAM API HELPERS ---
-def send_telegram_msg(chat_id, text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+# --- DUAL TELEGRAM API HELPER ---
+def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=10)
         res_json = res.json()
         if not res_json.get("ok"):
             log_event(f"Telegram API Error ({chat_id}): {res_json.get('description')}")
         else:
-            log_event(f"SUCCESS: Posted to {chat_id}")
+            log_event(f"SUCCESS: Msg Sent to {chat_id}")
         return res_json
     except Exception as e:
         log_event(f"Telegram Exception ({chat_id}): {e}")
@@ -168,9 +181,10 @@ def process_and_send_signals():
             f"📊 <b>Analysis</b>: {analysis_text}"
         )
 
-        send_telegram_msg(VIP_CHANNEL_ID, spot_text)
+        # VIP Bot Sends to VIP Channel
+        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_text)
         time.sleep(1)
-        send_telegram_msg(VIP_CHANNEL_ID, futures_text)
+        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_text)
         time.sleep(1)
 
         if index == 0:
@@ -186,7 +200,8 @@ def process_and_send_signals():
         f"🔥 <b>GET REAL-TIME INSTANT SIGNALS IN VIP</b> 🔥\n\n"
         f"👉 <b>Join VIP Bot</b>: @BinanceTop10_VIPBot"
     )
-    send_telegram_msg(FREE_CHANNEL_ID, free_promo_text)
+    # Free Bot Sends to Free Channel
+    send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo_text)
     return True
 
 def continuous_signal_loop():
@@ -196,13 +211,11 @@ def continuous_signal_loop():
             process_and_send_signals()
         except Exception as e:
             log_event(f"Error in Loop: {e}\n{traceback.format_exc()}")
-        
-        # 4 Hours Interval (14400 seconds)
         time.sleep(14400)
 
 @app.route('/')
 def home():
-    return "VIP Bot Operational!"
+    return "VIP & Free Signal Server Active!"
 
 @app.route('/logs')
 def view_logs():
@@ -213,7 +226,6 @@ def force_signal():
     threading.Thread(target=process_and_send_signals, daemon=True).start()
     return "Instant Signal Processing Triggered! Check Telegram."
 
-# Start background worker on launch
 threading.Thread(target=continuous_signal_loop, daemon=True).start()
 
 if __name__ == "__main__":
