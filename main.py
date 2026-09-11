@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
+BOT_TOKEN = "8997353064:AAH3g9MlS-tjPOxpihquJVMcopWRnn_SMEQ"
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
