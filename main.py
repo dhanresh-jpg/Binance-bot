@@ -149,25 +149,51 @@ def create_vip_invite_link():
         log_event(f"Invite Link Error: {e}")
     return None
 
-# --- MARKET DATA & SIGNALS ---
+# --- ACCURATE MULTI-SOURCE MARKET DATA FETCHING ---
 def fetch_binance_price(symbol):
+    # Primary Source: Binance Main API
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        res = requests.get(url, timeout=3)
+        res = requests.get(url, timeout=4)
         if res.status_code == 200:
             return float(res.json()["price"])
     except Exception as e:
-        log_event(f"Binance fetch fail for {symbol}: {e}")
-    fallback_prices = {"BTCUSDT": 62500.0, "ETHUSDT": 2450.0, "SOLUSDT": 135.0, "BNBUSDT": 550.0}
-    return fallback_prices.get(symbol, 100.0)
+        log_event(f"Binance Primary Fetch Fail for {symbol}: {e}")
+
+    # Backup Source 1: Binance Alternate API Endpoint
+    try:
+        url = f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}"
+        res = requests.get(url, timeout=4)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception as e:
+        log_event(f"Binance Backup Fetch Fail for {symbol}: {e}")
+
+    # Backup Source 2: CoinGecko API Fallback
+    try:
+        cg_map = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "BNBUSDT": "binancecoin"}
+        coin_id = cg_map.get(symbol)
+        if coin_id:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                return float(res.json()[coin_id]["usd"])
+    except Exception as e:
+        log_event(f"CoinGecko Fetch Fail for {symbol}: {e}")
+
+    return None
 
 def generate_and_send_signals():
-    log_event("Generating market signals...")
+    log_event("Generating market signals with live prices...")
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
     first_spot, first_fut = None, None
 
     for sym in symbols:
         price = fetch_binance_price(sym)
+        if not price:
+            log_event(f"Skipping signal generation for {sym}: Live price unavailable.")
+            continue
+
         p_fmt = f"{price:.2f}" if price > 10 else f"{price:.4f}"
 
         spot_msg = (
@@ -220,7 +246,7 @@ def continuous_loop():
             generate_and_send_signals()
         except Exception as e:
             log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
-        time.sleep(14400)
+        time.sleep(14400)  # Exactly 4 Hours
 
 # --- BOT COMMANDS LISTENER ---
 def process_bot_updates():
