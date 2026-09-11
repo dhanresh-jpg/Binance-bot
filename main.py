@@ -2,6 +2,7 @@ import threading
 import time
 import random
 import requests
+import sqlite3
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
@@ -9,9 +10,6 @@ from flask import Flask, request, jsonify
 BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
-
-# Exact Render App URL & Trust Wallet USDT Address
-SERVER_URL = "https://binance-topsignals-bot.onrender.com"
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 app = Flask(__name__)
@@ -24,11 +22,39 @@ PLANS = {
 }
 
 pending_payments = {}
-
 daily_stats = {
     "total_spot": 0, "total_futures": 0, "tp1_hits": 0, 
     "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0
 }
+
+# --- DATABASE SETUP ---
+def init_db():
+    conn = sqlite3.connect("vip_members.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS members (
+            user_id INTEGER PRIMARY KEY,
+            expiry_date TEXT,
+            status TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def add_vip_member(user_id, days):
+    conn = sqlite3.connect("vip_members.db")
+    cursor = conn.cursor()
+    expiry = datetime.now(IST) + timedelta(days=days)
+    expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute('''
+        INSERT OR REPLACE INTO members (user_id, expiry_date, status)
+        VALUES (?, ?, 'ACTIVE')
+    ''', (user_id, expiry_str))
+    conn.commit()
+    conn.close()
+    return expiry_str
 
 @app.route('/')
 def home():
@@ -80,14 +106,13 @@ def check_trc20_payment(expected_amount, start_timestamp):
                 ):
                     tx_time = tx.get("block_ts", 0) / 1000
                     amount = float(tx.get("quant", 0)) / 1_000_000
-                    
-                    if tx_time >= (start_timestamp - 60) and abs(amount - expected_amount) < 0.5:
+                    if tx_time >= (start_timestamp - 120) and abs(amount - expected_amount) < 0.5:
                         return True
     except Exception:
         pass
     return False
 
-# --- TECHNICAL ANALYSIS & SIGNAL ENGINE ---
+# --- SIGNAL ENGINE ---
 def fetch_binance_klines(symbol):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
@@ -131,7 +156,6 @@ def get_accurate_market_signals():
             current_price = closes[-1]
             rsi = calculate_rsi(closes)
             sma_20 = sum(closes[-20:]) / 20
-            
             vol_24h = (sum(volumes[-24:]) * current_price) / 1_000_000 if len(volumes) >= 24 else 150.0
             price_change = ((current_price - closes[0]) / closes[0]) * 100
 
@@ -170,7 +194,6 @@ def send_daily_report():
     send_telegram_msg(VIP_CHANNEL_ID, report_text)
     time.sleep(2)
     send_telegram_msg(FREE_CHANNEL_ID, report_text)
-
     daily_stats = {"total_spot": 0, "total_futures": 0, "tp1_hits": 0, "tp2_hits": 0, "tp3_hits": 0, "sl_hits": 0, "total_gain_pct": 0.0}
 
 def signal_engine():
@@ -258,6 +281,9 @@ def execution_loop():
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
+    if not data:
+        return jsonify({"status": "ok"})
+
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"]["text"]
@@ -288,6 +314,7 @@ def telegram_webhook():
             
             pending_payments[user_id] = {
                 "amount": plan["price"],
+                "days": plan["days"],
                 "timestamp": time.time(),
                 "plan": plan["name"]
             }
@@ -298,7 +325,7 @@ def telegram_webhook():
                 f"<b>Network</b>: TRC20 (TRON)\n\n"
                 f"📍 <b>Deposit Address</b>:\n"
                 f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-                f"⚠️ <i>Please send the exact amount. Once transferred, tap the button below to verify automatically via TRON blockchain.</i>"
+                f"⚠️ <i>Send the exact amount. After payment, click below to verify.</i>"
             )
             keyboard = {"inline_keyboard": [[{"text": "🔄 Check My Payment", "callback_data": "check_payment"}]]}
             send_telegram_msg(user_id, pay_text, reply_markup=keyboard)
@@ -308,22 +335,24 @@ def telegram_webhook():
             if p_data:
                 is_paid = check_trc20_payment(p_data["amount"], p_data["timestamp"])
                 if is_paid:
+                    expiry_str = add_vip_member(user_id, p_data["days"])
                     invite_link = create_single_use_invite_link()
                     if invite_link:
                         success_text = (
                             f"✅ <b>PAYMENT CONFIRMED!</b>\n\n"
-                            f"Welcome to Binance Top 10 VIP Channel!\n\n"
+                            f"Welcome to Binance Top 10 VIP Channel!\n"
+                            f"📅 <b>Expiry Date</b>: {expiry_str} IST\n\n"
                             f"👉 <b>Join VIP Channel</b>: {invite_link}\n\n"
-                            f"<i>Note: This invite link is single-use and valid for 1 join only.</i>"
+                            f"<i>Note: Single-use link valid for 1 join.</i>"
                         )
                         send_telegram_msg(user_id, success_text)
                         del pending_payments[user_id]
                     else:
-                        send_telegram_msg(user_id, "⚠️ Error generating VIP link. Please contact support.")
+                        send_telegram_msg(user_id, "⚠️ Error generating VIP link. Contact support.")
                 else:
-                    send_telegram_msg(user_id, "⏳ <b>Payment not detected yet!</b>\n\nPlease complete the transfer to your Trust Wallet address and try clicking 'Check My Payment' again in a minute.")
+                    send_telegram_msg(user_id, "⏳ <b>Payment not detected yet!</b>\n\nPlease complete transfer and click 'Check My Payment' again in 1 minute.")
             else:
-                send_telegram_msg(user_id, "⚠️ No active payment order found. Please send /start to select a plan.")
+                send_telegram_msg(user_id, "⚠️ No active payment found. Send /start to select a plan.")
 
     return jsonify({"status": "ok"})
 
