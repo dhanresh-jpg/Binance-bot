@@ -10,8 +10,11 @@ BOT_TOKEN = "8997353064:AAGqtm4nFQihOzwgIUuWWXRHagTAt8Itq4w"
 VIP_CHANNEL_ID = "-1003836756507"
 FREE_CHANNEL_ID = "-1003924921868"
 
-# Your Trust Wallet USDT (TRC20) Address
+# Trust Wallet USDT (TRC20) Address
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
+
+# Updated Exact Render Base URL
+RENDER_BASE_URL = "https://binance-topsignals-bot.onrender.com"
 
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -22,7 +25,7 @@ PLANS = {
     "plan_30": {"days": 30, "price": 27.0, "name": "30 Days VIP Access"}
 }
 
-# Stores active payment checks: { user_id: { "amount": 10.0, "timestamp": 1234567 } }
+# Pending payment tracking dictionary
 pending_payments = {}
 
 daily_stats = {
@@ -68,22 +71,20 @@ def create_single_use_invite_link():
 
 # --- BLOCKCHAIN AUTO-VERIFICATION (TRONSCAN API) ---
 def check_trc20_payment(expected_amount, start_timestamp):
-    """Monitors TRON blockchain for incoming USDT-TRC20 payments to Trust Wallet"""
     url = f"https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=20&start=0&sort=-timestamp&count=true&relatedAddress={TRUST_WALLET_ADDRESS}"
     try:
         res = requests.get(url, timeout=8)
         if res.status_code == 200:
             data = res.json().get("token_transfers", [])
             for tx in data:
-                # Check USDT contract, receiver address, and timestamp after payment request
                 if (
                     tx.get("to_address") == TRUST_WALLET_ADDRESS and
                     tx.get("tokenInfo", {}).get("tokenSymbol") == "USDT"
                 ):
                     tx_time = tx.get("block_ts", 0) / 1000
-                    amount = float(tx.get("quant", 0)) / 1_000_000  # Convert 6 decimals
+                    amount = float(tx.get("quant", 0)) / 1_000_000
                     
-                    if tx_time >= (start_timestamp - 60) and abs(amount - expected_amount) < 0.5:
+                    if tx_time >= (start_timestamp - 120) and abs(amount - expected_amount) < 0.5:
                         return True
     except Exception:
         pass
@@ -261,6 +262,9 @@ def execution_loop():
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
+    if not data:
+        return jsonify({"status": "error"}), 400
+
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"]["text"]
@@ -301,7 +305,7 @@ def telegram_webhook():
                 f"<b>Network</b>: TRC20 (TRON)\n\n"
                 f"📍 <b>Deposit Address</b>:\n"
                 f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-                f"⚠️ <i>Please send the exact amount. Once transferred, tap the button below to verify automatically via TRON blockchain.</i>"
+                f"⚠️ <i>Send the exact amount. Once transferred, click the button below to verify automatically via TRON blockchain.</i>"
             )
             keyboard = {"inline_keyboard": [[{"text": "🔄 Check My Payment", "callback_data": "check_payment"}]]}
             send_telegram_msg(user_id, pay_text, reply_markup=keyboard)
@@ -326,7 +330,7 @@ def telegram_webhook():
                 else:
                     send_telegram_msg(user_id, "⏳ <b>Payment not detected yet!</b>\n\nPlease complete the transfer to your Trust Wallet address and try clicking 'Check My Payment' again in a minute.")
             else:
-                send_telegram_msg(user_id, "⚠️ No active payment order found. Please send /start to select a plan.")
+                send_telegram_msg(user_id, "⚠️ No active payment order found. Send /start to select a plan.")
 
     return jsonify({"status": "ok"})
 
