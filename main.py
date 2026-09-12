@@ -440,16 +440,15 @@ def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
     return "Triggered!"
 
-# Background Threads Launch
+# Background Threads Initialization
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
 
-# Delayed Signal Launch (Prevents Render Port Binding Surfing)
-def delayed_first_scan():
-    time.sleep(5)
+def initial_delayed_scan():
+    time.sleep(3)
     generate_and_send_signals()
 
-threading.Thread(target=delayed_first_scan, daemon=True).start()
+threading.Thread(target=initial_delayed_scan, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
