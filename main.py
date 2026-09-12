@@ -469,15 +469,21 @@ def process_bot_updates():
                     elif text in ["📊 Free vs VIP Comparison"]:
                         comparison_txt = (
                             f"📊 <b>FREE vs VIP CHANNEL COMPARISON</b>\n\n"
-                            f"<b>Free Channel:</b>\n"
-                            f"❌ 1 Futures Signal Preview / 4 hrs\n"
-                            f"❌ No Spot Swing Signals\n"
-                            f"❌ No Live Trailing TP/SL Alerts\n\n"
-                            f"<b>VIP Channel:</b>\n"
-                            f"✅ 12 Signals Daily (Spot + Futures)\n"
-                            f"✅ Live Target 1, 2, 3 Hit Notifications\n"
-                            f"✅ 1-2 Days High-Yield Spot Swings\n"
-                            f"✅ 24/7 Priority Support"
+                            f"❌ <b>FREE CHANNEL</b>\n"
+                            f"├ ⚠️ Only 1 Signal Preview / day\n"
+                            f"├ ⚠️ Delayed Entry & Exit Targets\n"
+                            f"├ ❌ No Live TP1 / TP2 / TP3 Alerts\n"
+                            f"├ ❌ No Spot Swing Signals\n"
+                            f"└ ❌ No Priority Support\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"👑 <b>VIP CHANNEL (PREMIUM)</b>\n"
+                            f"├ 💎 <b>10-15 High-Accuracy Signals Daily</b>\n"
+                            f"├ 🎯 <b>Spot + Futures (Leverage Guidance)</b>\n"
+                            f"├ ⚡ <b>Real-Time Live Target & SL Alerts</b>\n"
+                            f"├ 📈 <b>Exclusive High-Yield Spot Swings</b>\n"
+                            f"├ 🧠 <b>Market Updates & Risk Management</b>\n"
+                            f"└ 💬 <b>24/7 VIP Priority Support</b>\n\n"
+                            f"🔥 <i>Upgrade now to maximize your trading profits!</i>"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, comparison_txt, reply_markup=get_verify_inline_keyboard())
 
