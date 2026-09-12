@@ -61,7 +61,7 @@ def init_db():
         ''')
         conn.commit()
         conn.close()
-        log_event("Database & High-Precision Engine initialized.")
+        log_event("Database & Precise Price Engine initialized.")
     except Exception as e:
         log_event(f"DB Error: {e}")
 
@@ -230,9 +230,29 @@ def get_verify_inline_keyboard():
     }
 
 # ==========================================
-# 5. HIGH-ACCURACY SCREENER & INDICATOR ENGINE
+# 5. LIVE TICK PRICE ENGINE (ACCURACY FIX)
 # ==========================================
-def fetch_from_binance(symbol, timeframe="1h"):
+def get_live_ticker_price(symbol):
+    """Fetches instant live price directly from Binance/Bybit tickers"""
+    # Attempt 1: Binance Direct Ticker
+    try:
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1.5)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception: pass
+
+    # Attempt 2: Bybit Direct Ticker
+    try:
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=1.5)
+        if res.status_code == 200:
+            result = res.json().get("result", {}).get("list", [])
+            if result:
+                return float(result[0]["lastPrice"])
+    except Exception: pass
+
+    return None
+
+def fetch_from_binance_candles(symbol, timeframe="1h"):
     try:
         interval = "1h" if timeframe == "1h" else "4h"
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=30"
@@ -242,7 +262,7 @@ def fetch_from_binance(symbol, timeframe="1h"):
     except Exception: pass
     return None
 
-def fetch_from_bybit(symbol, timeframe="1h"):
+def fetch_from_bybit_candles(symbol, timeframe="1h"):
     try:
         interval = "60" if timeframe == "1h" else "240"
         url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit=30"
@@ -255,16 +275,10 @@ def fetch_from_bybit(symbol, timeframe="1h"):
     return None
 
 def fetch_multi_exchange_candles(symbol, timeframe="1h"):
-    for fetcher in [fetch_from_binance, fetch_from_bybit]:
+    for fetcher in [fetch_from_binance_candles, fetch_from_bybit_candles]:
         closes = fetcher(symbol, timeframe)
         if closes and len(closes) >= 20:
             return closes
-    return None
-
-def fetch_global_index_price(symbol):
-    closes = fetch_multi_exchange_candles(symbol, "1h")
-    if closes:
-        return closes[-1]
     return None
 
 def calculate_rsi(closes, period=14):
@@ -281,13 +295,12 @@ def calculate_rsi(closes, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def master_coin_scanner():
-    """High Precision Filter: 1H + 4H Trend Alignment + Dynamic RSI"""
+    """High Precision Scanner with Real-Time Ticker Integration"""
     current_time = time.time()
     for sym in list(recently_signaled_coins.keys()):
         if current_time - recently_signaled_coins[sym] > 28800:
             del recently_signaled_coins[sym]
 
-    # Major liquid coins to avoid pump-and-dump manipulation
     candidate_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "NEARUSDT", "FETUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT", "AVAXUSDT"]
     analyzed_coins = []
 
@@ -297,30 +310,30 @@ def master_coin_scanner():
 
         closes_1h = fetch_multi_exchange_candles(sym, timeframe="1h")
         closes_4h = fetch_multi_exchange_candles(sym, timeframe="4h")
+        live_price = get_live_ticker_price(sym)
 
-        if closes_1h and closes_4h:
-            price = closes_1h[-1]
+        if closes_1h and closes_4h and live_price:
             ema_20_1h = sum(closes_1h[-20:]) / 20.0
             ema_20_4h = sum(closes_4h[-20:]) / 20.0
             rsi = calculate_rsi(closes_1h)
 
-            # Strict Filter: Both 1H and 4H MUST be aligned in same direction
-            if price > ema_20_1h and price > ema_20_4h and (52 <= rsi <= 68):
-                analyzed_coins.append({"symbol": sym, "price": price, "trend": "BULLISH", "rsi": rsi})
+            if live_price > ema_20_1h and live_price > ema_20_4h and (52 <= rsi <= 68):
+                analyzed_coins.append({"symbol": sym, "price": live_price, "trend": "BULLISH", "rsi": rsi})
                 recently_signaled_coins[sym] = current_time
-            elif price < ema_20_1h and price < ema_20_4h and (32 <= rsi <= 48):
-                analyzed_coins.append({"symbol": sym, "price": price, "trend": "BEARISH", "rsi": rsi})
+            elif live_price < ema_20_1h and live_price < ema_20_4h and (32 <= rsi <= 48):
+                analyzed_coins.append({"symbol": sym, "price": live_price, "trend": "BEARISH", "rsi": rsi})
                 recently_signaled_coins[sym] = current_time
 
             if len(analyzed_coins) >= 2:
                 break
 
-    # Safe Fallback to BTC & SOL if market is sideways
+    # Dynamic Live Fallback (No Static Hardcoded Prices)
     if len(analyzed_coins) < 2:
-        analyzed_coins = [
-            {"symbol": "SOLUSDT", "price": fetch_global_index_price("SOLUSDT") or 145.0, "trend": "BULLISH", "rsi": 55.0},
-            {"symbol": "BTCUSDT", "price": fetch_global_index_price("BTCUSDT") or 62000.0, "trend": "BULLISH", "rsi": 54.0}
-        ]
+        for sym in ["SOLUSDT", "ETHUSDT", "BTCUSDT"]:
+            if len(analyzed_coins) >= 2: break
+            live_p = get_live_ticker_price(sym)
+            if live_p and not any(c["symbol"] == sym for c in analyzed_coins):
+                analyzed_coins.append({"symbol": sym, "price": live_p, "trend": "BULLISH", "rsi": 55.0})
 
     return analyzed_coins
 
@@ -339,7 +352,7 @@ def monitor_active_signals():
                         continue
 
                     symbol = sig["symbol"]
-                    current_price = fetch_global_index_price(symbol)
+                    current_price = get_live_ticker_price(symbol)
                     if not current_price: continue
 
                     signal_type, trend = sig["type"], sig["trend"]
@@ -381,20 +394,23 @@ def monitor_active_signals():
             purge_day1_oldest_messages()
         except Exception as e:
             log_event(f"Monitor Loop Error: {e}")
-        time.sleep(25)
+        time.sleep(20)
 
 # ==========================================
-# 7. SIGNAL BROADCASTER ENGINE (LOW LOSS RISK)
+# 7. SIGNAL BROADCASTER ENGINE
 # ==========================================
 def generate_and_send_signals():
     scanned = master_coin_scanner()
+    if len(scanned) < 2:
+        return
+
     spot_coin, futures_coin = scanned[0], scanned[1]
 
     # --- SPOT SIGNAL DESIGN ---
     sp_p = spot_coin["price"]
     sp_trend = spot_coin["trend"]
     if sp_trend == "BULLISH":
-        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.03, sp_p * 1.06, sp_p * 1.10, sp_p * 0.975  # Tighter SL: 2.5%
+        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.03, sp_p * 1.06, sp_p * 1.10, sp_p * 0.975
         spot_msg = (
             f"🟢 <b>[VIP SPOT SWING SIGNAL - HIGH ACCURACY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
@@ -425,11 +441,11 @@ def generate_and_send_signals():
         "created_at": datetime.now(IST)
     })
 
-    # --- FUTURES SIGNAL DESIGN (TIGHT SL FOR ZERO LARGE LOSS) ---
+    # --- FUTURES SIGNAL DESIGN ---
     ft_p = futures_coin["price"]
     ft_trend = futures_coin["trend"]
     if ft_trend == "BULLISH":
-        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 1.012, ft_p * 1.025, ft_p * 1.045, ft_p * 0.988  # Tighter SL: 1.2%
+        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 1.012, ft_p * 1.025, ft_p * 1.045, ft_p * 0.988
         futures_msg = (
             f"⚡ <b>[VIP FUTURES LONG SIGNAL]</b>\n"
             f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
@@ -543,7 +559,7 @@ def process_bot_updates():
                     if text in ["/start", "🔙 Main Menu"]:
                         welcome = (
                             f"🤖 <b>Welcome to Binance Top 10 VIP Bot!</b>\n\n"
-                            f"High Precision Multi-Exchange Signals with Automated TRON TRC-20 Activation.\n\n"
+                            f"Real-Time Accurate Crypto Signals with Automated TRON TRC-20 Activation.\n\n"
                             f"👇 <b>Select an option below to proceed:</b>"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, welcome, reply_markup=get_vip_menu_keyboard())
@@ -649,7 +665,7 @@ def start_resilient_thread(target_func, name):
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "message": "High Precision Signal Engine Operating Normal"})
+    return jsonify({"status": "active", "message": "High Precision Real-Time Price Engine Operating Normal"})
 
 @app.route('/logs')
 def get_logs():
