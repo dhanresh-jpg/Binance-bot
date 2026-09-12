@@ -19,7 +19,7 @@ TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
-sent_signals_history = []  # Prevents coin repetition
+sent_signals_history = []
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -153,8 +153,6 @@ def create_vip_invite_link():
 # --- MULTI-EXCHANGE AGGREGATED PRICE ENGINE ---
 def fetch_global_index_price(symbol):
     prices = []
-    
-    # 1. Bybit Exchange Price
     try:
         url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}"
         res = requests.get(url, timeout=3)
@@ -163,18 +161,16 @@ def fetch_global_index_price(symbol):
             if lst:
                 prices.append(float(lst[0]["lastPrice"]))
     except Exception as e:
-        log_event(f"Bybit price fail: {e}")
+        pass
 
-    # 2. Binance Exchange Price
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
         res = requests.get(url, timeout=3)
         if res.status_code == 200:
             prices.append(float(res.json()["price"]))
     except Exception as e:
-        log_event(f"Binance price fail: {e}")
+        pass
 
-    # 3. KuCoin Exchange Price
     try:
         kc_sym = symbol.replace("USDT", "-USDT")
         url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={kc_sym}"
@@ -182,15 +178,12 @@ def fetch_global_index_price(symbol):
         if res.status_code == 200:
             prices.append(float(res.json()["data"]["price"]))
     except Exception as e:
-        log_event(f"KuCoin price fail: {e}")
+        pass
 
-    # Return Multi-Exchange Average Price if available
     if prices:
-        avg_price = sum(prices) / len(prices)
-        return avg_price
+        return sum(prices) / len(prices)
     return None
 
-# --- TECHNICAL ANALYSIS & MULTI-EXCHANGE SCANNER ---
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0
@@ -208,23 +201,20 @@ def calculate_rsi(prices, period=14):
 
 def get_market_analysis(symbol):
     try:
-        # Fetch 1-Hour Candlesticks via Bybit Engine
         url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval=60&limit=30"
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
             candles = res.json().get("result", {}).get("list", [])
-            if len(candles) >= 20:
+            if len(candles) >= 15:
                 closes = [float(c[4]) for c in reversed(candles)]
-                
-                # Global Multi-Exchange Index Price Fetch
                 current_price = fetch_global_index_price(symbol) or closes[-1]
                 rsi = calculate_rsi(closes)
-                ema_20 = sum(closes[-20:]) / 20.0
+                ema_20 = sum(closes[-15:]) / 15.0
                 
-                # 75% - 80% Win Rate Condition Checks
-                if rsi > 52 and current_price > ema_20:
+                # Optimized Trend Condition
+                if current_price >= ema_20:
                     return {"symbol": symbol, "price": current_price, "trend": "BULLISH", "rsi": round(rsi, 1)}
-                elif rsi < 48 and current_price < ema_20:
+                else:
                     return {"symbol": symbol, "price": current_price, "trend": "BEARISH", "rsi": round(rsi, 1)}
     except Exception as e:
         log_event(f"Analysis error for {symbol}: {e}")
@@ -234,37 +224,36 @@ def scan_top_opportunity_coins():
     candidate_pool = [
         "AVAXUSDT", "LINKUSDT", "NEARUSDT", "DOTUSDT", "FETUSDT", 
         "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
-        "RNDRUSDT", "TIAUSDT", "LTCUSDT", "ATOMUSDT", "ADAUSDT"
+        "RNDRUSDT", "TIAUSDT", "LTCUSDT", "ATOMUSDT", "ADAUSDT",
+        "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"
     ]
     
-    # Exclude recent coins to avoid continuous repetition
-    valid_pool = [s for s in candidate_pool if s not in sent_signals_history[-8:]]
-    analyzed_list = []
+    valid_pool = [s for s in candidate_pool if s not in sent_signals_history[-6:]]
+    if len(valid_pool) < 2:
+        valid_pool = candidate_pool
 
+    analyzed_list = []
     for sym in valid_pool:
         result = get_market_analysis(sym)
         if result:
             analyzed_list.append(result)
-            if len(analyzed_list) >= 3:
+            if len(analyzed_list) >= 4:
                 break
-        time.sleep(0.3)
+        time.sleep(0.2)
 
     return analyzed_list
 
-# --- SIGNAL GENERATION & BROADCAST ENGINE ---
+# --- SIGNAL BROADCAST ENGINE ---
 def generate_and_send_signals():
-    log_event("Scanning Multi-Exchange Markets for High-Accuracy Opportunities...")
+    log_event("Scanning Multi-Exchange Markets for Opportunities...")
     scanned_coins = scan_top_opportunity_coins()
 
     if len(scanned_coins) < 2:
-        log_event("Not enough high-confidence setups found across exchanges. Retrying next cycle.")
+        log_event("Skipping cycle: Could not fetch enough market data.")
         return
 
-    # Assign distinct coins for Spot & Futures to avoid single-coin overlap
     spot_coin = scanned_coins[0]
     futures_coin = scanned_coins[1]
-
-    # Save to history to avoid repetition
     sent_signals_history.extend([spot_coin["symbol"], futures_coin["symbol"]])
 
     # 1. SPOT SWING SIGNAL (1-2 Days Hold Timeframe)
@@ -275,10 +264,10 @@ def generate_and_send_signals():
         spot_msg = (
             f"🟢 <b>[VIP SPOT SWING SIGNAL - BUY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
-            f"🌐 <b>Price Index</b>: Multi-Exchange Global Average\n\n"
+            f"🌐 <b>Price Index</b>: Global Multi-Exchange Average\n\n"
             f"📥 <b>Buy Entry Zone</b>: ${sp_fmt}\n"
             f"⏱️ <b>Timeframe Target</b>: 1 - 2 Days Swing\n"
-            f"📊 <b>Indicators</b>: RSI ({spot_coin['rsi']}) + EMA 20 Cross\n\n"
+            f"📊 <b>Indicators</b>: RSI ({spot_coin['rsi']}) + EMA Trend\n\n"
             f"🎯 <b>Target 1</b>: ${sp_price * 1.04:.4f} (+4%)\n"
             f"🎯 <b>Target 2</b>: ${sp_price * 1.08:.4f} (+8%)\n"
             f"🎯 <b>Target 3</b>: ${sp_price * 1.14:.4f} (+14%)\n"
@@ -287,12 +276,12 @@ def generate_and_send_signals():
         )
     else:
         spot_msg = (
-            f"🔴 <b>[VIP SPOT SWING SIGNAL - DIP ACCUMULATION]</b>\n"
+            f"🔴 <b>[VIP SPOT SWING SIGNAL - DIP BUY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
-            f"🌐 <b>Price Index</b>: Multi-Exchange Average\n\n"
+            f"🌐 <b>Price Index</b>: Global Multi-Exchange Average\n\n"
             f"📥 <b>Buy Zone</b>: ${sp_price * 0.96:.4f}\n"
             f"⏱️ <b>Timeframe Target</b>: 1 - 2 Days\n"
-            f"📊 <b>Indicators</b>: Oversold RSI ({spot_coin['rsi']})\n\n"
+            f"📊 <b>Indicators</b>: Support Zone RSI ({spot_coin['rsi']})\n\n"
             f"🎯 <b>Target 1</b>: ${sp_price * 1.03:.4f} (+3%)\n"
             f"🎯 <b>Target 2</b>: ${sp_price * 1.07:.4f} (+7%)\n"
             f"⛔ <b>Stop Loss</b>: ${sp_price * 0.91:.4f} (-5%)\n\n"
@@ -315,7 +304,7 @@ def generate_and_send_signals():
             f"🎯 <b>TP2</b>: ${ft_price * 1.032:.4f} (+32% @ 10x)\n"
             f"🎯 <b>TP3</b>: ${ft_price * 1.055:.4f} (+55% @ 10x)\n"
             f"⛔ <b>Stop Loss</b>: ${ft_price * 0.985:.4f} (-15% @ 10x)\n\n"
-            f"📊 <b>Analysis</b>: High Volume Breakout Confirmation"
+            f"📊 <b>Analysis</b>: High Volume Momentum"
         )
     else:
         futures_msg = (
@@ -329,7 +318,7 @@ def generate_and_send_signals():
             f"🎯 <b>TP2</b>: ${ft_price * 0.968:.4f} (+32% @ 10x)\n"
             f"🎯 <b>TP3</b>: ${ft_price * 0.945:.4f} (+55% @ 10x)\n"
             f"⛔ <b>Stop Loss</b>: ${ft_price * 1.015:.4f} (-15% @ 10x)\n\n"
-            f"📊 <b>Analysis</b>: Resistance Rejection Confirmation"
+            f"📊 <b>Analysis</b>: Resistance Rejection"
         )
 
     # Post Signals to VIP Channel
@@ -348,6 +337,7 @@ def generate_and_send_signals():
         f"👉 <b>Join VIP Bot:</b> @BinanceTop10_VIPBot"
     )
     send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo)
+    log_event("Signals successfully generated & delivered to channels!")
 
 def continuous_loop():
     time.sleep(5)
@@ -356,7 +346,7 @@ def continuous_loop():
             generate_and_send_signals()
         except Exception as e:
             log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
-        time.sleep(14400)  # Every 4 Hours
+        time.sleep(14400)
 
 # --- FREE BOT LISTENER ---
 def process_free_bot_updates():
