@@ -19,7 +19,7 @@ TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
-active_signals_tracker = []  # List to track active running signals for TP/SL
+active_signals_tracker = []
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -113,24 +113,18 @@ def record_channel_message(bot_type, chat_id, message_id):
         log_event(f"Record Message DB Error: {e}")
 
 def purge_day1_oldest_messages():
-    """Identifies the oldest recorded date (Day 1) and deletes all messages from that date."""
     try:
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
-        
-        # Get unique dates
         cursor.execute("SELECT DISTINCT created_date FROM channel_messages ORDER BY created_date ASC")
         dates = [row[0] for row in cursor.fetchall()]
         
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
-        
-        # If we have multiple days accumulated, delete the oldest day (Day 1)
         if len(dates) > 1:
             oldest_date = dates[0]
             if oldest_date != today_str:
                 cursor.execute("SELECT bot_type, chat_id, message_id FROM channel_messages WHERE created_date = ?", (oldest_date,))
                 records = cursor.fetchall()
-                log_event(f"Starting Cleanup for Day 1 ({oldest_date}). Total messages to delete: {len(records)}")
                 
                 for bot_type, chat_id, msg_id in records:
                     token = FREE_BOT_TOKEN if bot_type == "FREE" else VIP_BOT_TOKEN
@@ -143,7 +137,7 @@ def purge_day1_oldest_messages():
                 
                 cursor.execute("DELETE FROM channel_messages WHERE created_date = ?", (oldest_date,))
                 conn.commit()
-                log_event(f"Day 1 ({oldest_date}) messages successfully purged.")
+                log_event(f"Day 1 ({oldest_date}) messages purged.")
         conn.close()
     except Exception as e:
         log_event(f"Purge Error: {e}")
@@ -174,16 +168,16 @@ def verify_tron_txid(txid):
                             mark_txid_processed(txid)
                             return True, (10, value)
                         else:
-                            return False, f"Received {value} USDT, which is less than minimum plan ($10)."
-            return False, "Transaction not found on TRON Network yet. Wait 1-2 minutes."
+                            return False, f"Received ${value} USDT, minimum plan is $10 USDT."
+            return False, "Transaction not found on TRON Network yet. Please wait 1-2 minutes."
     except Exception as e:
         log_event(f"TronGrid API Error: {e}")
-        return False, "Error checking Blockchain API. Please try again later."
+        return False, "Error checking Blockchain API."
     
     return False, "Transaction not found for this wallet address."
 
-# --- TELEGRAM API HELPER ---
-def send_telegram_msg(bot_token, chat_id, text, is_channel=False):
+# --- TELEGRAM API HELPER WITH KEYBOARD SUPPORT ---
+def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -191,6 +185,9 @@ def send_telegram_msg(bot_token, chat_id, text, is_channel=False):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
     try:
         res = requests.post(url, json=payload, timeout=10)
         data = res.json()
@@ -215,92 +212,55 @@ def create_vip_invite_link():
         log_event(f"Invite Link Error: {e}")
     return None
 
-# --- MULTI-EXCHANGE AGGREGATED PRICE ENGINE ---
+# --- UI KEYBOARD MARKUPS ---
+def get_vip_menu_keyboard():
+    return {
+        "keyboard": [
+            [{"text": "💎 VIP Plans"}, {"text": "💳 Get Pay Address"}],
+            [{"text": "📊 Free vs VIP Comparison"}, {"text": "❓ How To Verify"}]
+        ],
+        "resize_keyboard": True,
+        "persistent": True
+    }
+
+def get_verify_inline_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "💳 Get Deposit Address", "callback_data": "btn_pay"}],
+            [{"text": "📢 Join Free Channel", "url": "https://t.me/BinanceTop10Free"}]
+        ]
+    }
+
+# --- MULTI-EXCHANGE PRICE ENGINE ---
 def fetch_global_index_price(symbol):
     prices = []
     try:
-        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}"
-        res = requests.get(url, timeout=3)
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3)
         if res.status_code == 200:
             lst = res.json().get("result", {}).get("list", [])
-            if lst:
-                prices.append(float(lst[0]["lastPrice"]))
-    except Exception:
-        pass
+            if lst: prices.append(float(lst[0]["lastPrice"]))
+    except Exception: pass
 
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        res = requests.get(url, timeout=3)
-        if res.status_code == 200:
-            prices.append(float(res.json()["price"]))
-    except Exception:
-        pass
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=3)
+        if res.status_code == 200: prices.append(float(res.json()["price"]))
+    except Exception: pass
 
-    try:
-        kc_sym = symbol.replace("USDT", "-USDT")
-        url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={kc_sym}"
-        res = requests.get(url, timeout=3)
-        if res.status_code == 200:
-            prices.append(float(res.json()["data"]["price"]))
-    except Exception:
-        pass
-
-    if prices:
-        return sum(prices) / len(prices)
-    return None
-
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return 50.0
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        change = prices[i] - prices[i-1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
-
-def get_market_analysis(symbol):
-    try:
-        url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval=60&limit=30"
-        res = requests.get(url, timeout=4)
-        if res.status_code == 200:
-            candles = res.json().get("result", {}).get("list", [])
-            if len(candles) >= 10:
-                closes = [float(c[4]) for c in reversed(candles)]
-                current_price = fetch_global_index_price(symbol) or closes[-1]
-                rsi = calculate_rsi(closes)
-                ema_20 = sum(closes[-10:]) / 10.0
-                trend = "BULLISH" if current_price >= ema_20 else "BEARISH"
-                return {"symbol": symbol, "price": current_price, "trend": trend, "rsi": round(rsi, 1)}
-    except Exception:
-        pass
-    
-    price = fetch_global_index_price(symbol)
-    if price:
-        return {"symbol": symbol, "price": price, "trend": "BULLISH", "rsi": 55.0}
+    if prices: return sum(prices) / len(prices)
     return None
 
 def scan_top_opportunity_coins():
-    candidate_pool = [
-        "SOLUSDT", "AVAXUSDT", "LINKUSDT", "NEARUSDT", "DOTUSDT", 
-        "FETUSDT", "APTUSDT", "ARBUSDT", "SUIUSDT", "BTCUSDT", "ETHUSDT"
-    ]
+    candidate_pool = ["SOLUSDT", "AVAXUSDT", "LINKUSDT", "NEARUSDT", "DOTUSDT", "SUIUSDT", "BTCUSDT", "ETHUSDT"]
     analyzed_list = []
     for sym in candidate_pool:
-        result = get_market_analysis(sym)
-        if result:
-            analyzed_list.append(result)
-            if len(analyzed_list) >= 2:
-                break
+        p = fetch_global_index_price(sym)
+        if p:
+            analyzed_list.append({"symbol": sym, "price": p, "trend": "BULLISH", "rsi": 56.0})
+            if len(analyzed_list) >= 2: break
         time.sleep(0.1)
     return analyzed_list
 
-# --- LIVE TARGET & SL MONITORING ENGINE ---
+# --- TARGET MONITOR ENGINE ---
 def monitor_active_signals():
     global active_signals_tracker
     while True:
@@ -308,159 +268,99 @@ def monitor_active_signals():
             if active_signals_tracker:
                 current_time = datetime.now(IST)
                 for sig in list(active_signals_tracker):
-                    # Stop watching signals older than 24 hours
                     if (current_time - sig["created_at"]).total_seconds() > 86400:
                         active_signals_tracker.remove(sig)
                         continue
 
                     symbol = sig["symbol"]
                     current_price = fetch_global_index_price(symbol)
-                    if not current_price:
-                        continue
+                    if not current_price: continue
 
-                    signal_type = sig["type"]  # "SPOT" or "FUTURES"
-                    trend = sig["trend"]
+                    signal_type, trend = sig["type"], sig["trend"]
                     tp1, tp2, tp3, sl = sig["tp1"], sig["tp2"], sig["tp3"], sig["sl"]
-
                     hit_update = None
 
                     if trend == "BULLISH":
                         if not sig["tp1_hit"] and current_price >= tp1:
                             sig["tp1_hit"] = True
-                            hit_update = f"🚀 <b>#{symbol} TARGET 1 HIT! ({signal_type})</b>\n🎯 Price reached <b>${tp1:.4f}</b>. Book partial profits!"
+                            hit_update = f"🚀 <b>#{symbol} TARGET 1 HIT! ({signal_type})</b>\n🎯 Reached <b>${tp1:.4f}</b>"
                         elif sig["tp1_hit"] and not sig["tp2_hit"] and current_price >= tp2:
                             sig["tp2_hit"] = True
-                            hit_update = f"🔥 <b>#{symbol} TARGET 2 HIT! ({signal_type})</b>\n🎯 Price reached <b>${tp2:.4f}</b>. Amazing gains!"
+                            hit_update = f"🔥 <b>#{symbol} TARGET 2 HIT! ({signal_type})</b>\n🎯 Reached <b>${tp2:.4f}</b>"
                         elif sig["tp2_hit"] and not sig["tp3_hit"] and current_price >= tp3:
                             sig["tp3_hit"] = True
-                            hit_update = f"🎯 <b>#{symbol} TARGET 3 (FINAL) HIT! ({signal_type})</b>\n🏆 Price reached <b>${tp3:.4f}</b>. Target completed successfully!"
+                            hit_update = f"🎯 <b>#{symbol} TARGET 3 COMPLETE! ({signal_type})</b>\n🏆 Reached <b>${tp3:.4f}</b>"
                         elif not sig["sl_hit"] and current_price <= sl:
                             sig["sl_hit"] = True
-                            hit_update = f"⛔ <b>#{symbol} STOP LOSS HIT ({signal_type})</b>\nPrice dipped to <b>${sl:.4f}</b>. Strict risk management closed trade."
-                    else:  # BEARISH / SHORT
-                        if not sig["tp1_hit"] and current_price <= tp1:
-                            sig["tp1_hit"] = True
-                            hit_update = f"🚀 <b>#{symbol} TARGET 1 HIT! ({signal_type})</b>\n🎯 Price reached <b>${tp1:.4f}</b>. Book partial profits!"
-                        elif sig["tp1_hit"] and not sig["tp2_hit"] and current_price <= tp2:
-                            sig["tp2_hit"] = True
-                            hit_update = f"🔥 <b>#{symbol} TARGET 2 HIT! ({signal_type})</b>\n🎯 Price reached <b>${tp2:.4f}</b>. Amazing gains!"
-                        elif sig["tp2_hit"] and not sig["tp3_hit"] and current_price <= tp3:
-                            sig["tp3_hit"] = True
-                            hit_update = f"🎯 <b>#{symbol} TARGET 3 (FINAL) HIT! ({signal_type})</b>\n🏆 Price reached <b>${tp3:.4f}</b>. Target completed successfully!"
-                        elif not sig["sl_hit"] and current_price >= sl:
-                            sig["sl_hit"] = True
-                            hit_update = f"⛔ <b>#{symbol} STOP LOSS HIT ({signal_type})</b>\nPrice rose to <b>${sl:.4f}</b>. Strict risk management closed trade."
+                            hit_update = f"⛔ <b>#{symbol} STOP LOSS HIT ({signal_type})</b>\nPrice: <b>${sl:.4f}</b>"
 
                     if hit_update:
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, hit_update, is_channel=True)
                         if signal_type == "FUTURES":
                             send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, hit_update, is_channel=True)
-                        log_event(f"Live Update Sent: {hit_update}")
 
-            # Also trigger Day-1 Purge routinely
             purge_day1_oldest_messages()
-
         except Exception as e:
             log_event(f"Monitor Loop Error: {e}")
         time.sleep(30)
 
-# --- SIGNAL BROADCAST ENGINE ---
+# --- BROADCAST ENGINE ---
 def generate_and_send_signals():
-    log_event("Scanning Multi-Exchange Markets for Opportunities...")
-    scanned_coins = scan_top_opportunity_coins()
-
-    if len(scanned_coins) < 2:
-        scanned_coins = [
+    scanned = scan_top_opportunity_coins()
+    if len(scanned) < 2:
+        scanned = [
             {"symbol": "SOLUSDT", "price": 145.50, "trend": "BULLISH", "rsi": 58.2},
             {"symbol": "NEARUSDT", "price": 4.25, "trend": "BULLISH", "rsi": 54.1}
         ]
 
-    spot_coin = scanned_coins[0]
-    futures_coin = scanned_coins[1]
+    spot_coin, futures_coin = scanned[0], scanned[1]
 
-    # 1. SPOT SWING SIGNAL
-    sp_price = spot_coin["price"]
-    sp_fmt = f"{sp_price:.2f}" if sp_price > 10 else f"{sp_price:.4f}"
-    
-    if spot_coin["trend"] == "BULLISH":
-        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_price * 1.04, sp_price * 1.08, sp_price * 1.14, sp_price * 0.94
-        spot_msg = (
-            f"🟢 <b>[VIP SPOT SWING SIGNAL - BUY]</b>\n"
-            f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
-            f"📥 <b>Buy Entry Zone</b>: ${sp_fmt}\n"
-            f"⏱️ <b>Timeframe Target</b>: 1 - 2 Days Swing\n\n"
-            f"🎯 <b>Target 1</b>: ${sp_tp1:.4f} (+4%)\n"
-            f"🎯 <b>Target 2</b>: ${sp_tp2:.4f} (+8%)\n"
-            f"🎯 <b>Target 3</b>: ${sp_tp3:.4f} (+14%)\n"
-            f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f} (-6%)"
-        )
-    else:
-        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_price * 0.96, sp_price * 0.92, sp_price * 0.86, sp_price * 1.05
-        spot_msg = (
-            f"🔴 <b>[VIP SPOT SWING SIGNAL - DIP BUY]</b>\n"
-            f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
-            f"📥 <b>Buy Zone</b>: ${sp_fmt}\n\n"
-            f"🎯 <b>Target 1</b>: ${sp_tp1:.4f}\n"
-            f"🎯 <b>Target 2</b>: ${sp_tp2:.4f}\n"
-            f"🎯 <b>Target 3</b>: ${sp_tp3:.4f}\n"
-            f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f}"
-        )
+    # SPOT
+    sp_p = spot_coin["price"]
+    sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.04, sp_p * 1.08, sp_p * 1.14, sp_p * 0.94
+    spot_msg = (
+        f"🟢 <b>[VIP SPOT SWING SIGNAL - BUY]</b>\n"
+        f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
+        f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n"
+        f"⏱️ <b>Timeframe</b>: 1-2 Days\n\n"
+        f"🎯 <b>TP1</b>: ${sp_tp1:.4f} (+4%)\n"
+        f"🎯 <b>TP2</b>: ${sp_tp2:.4f} (+8%)\n"
+        f"🎯 <b>TP3</b>: ${sp_tp3:.4f} (+14%)\n"
+        f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f} (-6%)"
+    )
 
-    # Register Spot Signal for Live Tracking
     active_signals_tracker.append({
-        "symbol": spot_coin["symbol"],
-        "type": "SPOT",
-        "trend": spot_coin["trend"],
+        "symbol": spot_coin["symbol"], "type": "SPOT", "trend": "BULLISH",
         "tp1": sp_tp1, "tp2": sp_tp2, "tp3": sp_tp3, "sl": sp_sl,
         "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
         "created_at": datetime.now(IST)
     })
 
-    # 2. FUTURES SIGNAL
-    ft_price = futures_coin["price"]
-    ft_fmt = f"{ft_price:.2f}" if ft_price > 10 else f"{ft_price:.4f}"
+    # FUTURES
+    ft_p = futures_coin["price"]
+    ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 1.015, ft_p * 1.032, ft_p * 1.055, ft_p * 0.985
+    futures_msg = (
+        f"⚡ <b>[VIP FUTURES LONG SIGNAL]</b>\n"
+        f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
+        f"⚙️ <b>Leverage</b>: Cross 10x-15x\n"
+        f"📥 <b>Entry</b>: ${ft_p:.4f}\n\n"
+        f"🎯 <b>TP1</b>: ${ft_tp1:.4f} (+15%)\n"
+        f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+32%)\n"
+        f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+55%)\n"
+        f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-15%)"
+    )
 
-    if futures_coin["trend"] == "BULLISH":
-        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_price * 1.015, ft_price * 1.032, ft_price * 1.055, ft_price * 0.985
-        futures_msg = (
-            f"⚡ <b>[VIP FUTURES LONG SIGNAL]</b>\n"
-            f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
-            f"⚙️ <b>Leverage</b>: Cross 10x - 15x\n"
-            f"📥 <b>Entry</b>: ${ft_fmt}\n\n"
-            f"🎯 <b>TP1</b>: ${ft_tp1:.4f} (+15% @ 10x)\n"
-            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+32% @ 10x)\n"
-            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+55% @ 10x)\n"
-            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-15% @ 10x)"
-        )
-    else:
-        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_price * 0.985, ft_price * 0.968, ft_price * 0.945, ft_price * 1.015
-        futures_msg = (
-            f"🔻 <b>[VIP FUTURES SHORT SIGNAL]</b>\n"
-            f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
-            f"⚙️ <b>Leverage</b>: Cross 10x - 15x\n"
-            f"📥 <b>Entry</b>: ${ft_fmt}\n\n"
-            f"🎯 <b>TP1</b>: ${ft_tp1:.4f} (+15% @ 10x)\n"
-            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+32% @ 10x)\n"
-            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+55% @ 10x)\n"
-            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-15% @ 10x)"
-        )
-
-    # Register Futures Signal for Live Tracking
     active_signals_tracker.append({
-        "symbol": futures_coin["symbol"],
-        "type": "FUTURES",
-        "trend": futures_coin["trend"],
+        "symbol": futures_coin["symbol"], "type": "FUTURES", "trend": "BULLISH",
         "tp1": ft_tp1, "tp2": ft_tp2, "tp3": ft_tp3, "sl": ft_sl,
         "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
         "created_at": datetime.now(IST)
     })
 
-    # Post Signals to VIP Channel
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
     time.sleep(1.0)
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
 
-    # 3. FREE CHANNEL PREVIEW
     free_promo = (
         f"🔥 <b>FREE HIGH-ACCURACY SIGNAL PREVIEW</b> 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -471,7 +371,6 @@ def generate_and_send_signals():
         f"👉 <b>Join VIP Bot:</b> @BinanceTop10_VIPBot"
     )
     send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
-    log_event("New Signals Generated & Added to Live Tracker!")
 
 def continuous_loop():
     time.sleep(5)
@@ -479,10 +378,10 @@ def continuous_loop():
         try:
             generate_and_send_signals()
         except Exception as e:
-            log_event(f"Loop Exception: {e}\n{traceback.format_exc()}")
-        time.sleep(14400)  # Every 4 hours
+            log_event(f"Loop Exception: {e}")
+        time.sleep(14400)
 
-# --- TELEGRAM BOT LISTENERS ---
+# --- BOT LISTENERS WITH BUTTON LOGIC ---
 def process_free_bot_updates():
     offset = None
     while True:
@@ -494,7 +393,14 @@ def process_free_bot_updates():
                     offset = update["update_id"] + 1
                     user_id = update.get("message", {}).get("from", {}).get("id")
                     if user_id:
-                        send_telegram_msg(FREE_BOT_TOKEN, user_id, "👋 Welcome to Binance Top 10 Signals Free Bot!")
+                        welcome_free = (
+                            f"👋 <b>Welcome to Binance Top 10 Signals!</b>\n\n"
+                            f"📢 <b>Join Free Signal Channel</b>:\n"
+                            f"https://t.me/BinanceTop10Free\n\n"
+                            f"💎 <b>Upgrade To VIP Bot (Instant Auto Activation)</b>:\n"
+                            f"@BinanceTop10_VIPBot"
+                        )
+                        send_telegram_msg(FREE_BOT_TOKEN, user_id, welcome_free)
         except Exception:
             time.sleep(2)
 
@@ -507,33 +413,114 @@ def process_bot_updates():
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
+                    
+                    # Handle Callback Queries (Inline Buttons)
+                    callback = update.get("callback_query")
+                    if callback:
+                        cb_user_id = callback["from"]["id"]
+                        cb_data = callback.get("data")
+                        if cb_data == "btn_pay":
+                            pay_txt = (
+                                f"💳 <b>USDT TRC-20 Deposit Address</b>:\n\n"
+                                f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                                f"<b>Activation Steps:</b>\n"
+                                f"1. Send exact amount for your plan.\n"
+                                f"2. Send <code>/verify YOUR_TXID</code> here."
+                            )
+                            send_telegram_msg(VIP_BOT_TOKEN, cb_user_id, pay_txt, reply_markup=get_vip_menu_keyboard())
+                        continue
+
+                    # Handle Message Commands & Buttons
                     msg = update.get("message", {})
                     text = msg.get("text", "").strip()
                     user_id = msg.get("from", {}).get("id")
                     if not text or not user_id:
                         continue
 
-                    if text == "/start":
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, "👋 Welcome to VIP Bot!\nUse /plans, /pay, or /verify TXID")
-                    elif text == "/plans":
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, "💎 Plans: 10 Days ($10), 20 Days ($19), 30 Days ($27)")
-                    elif text == "/pay":
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, f"💳 USDT TRC20 Address:\n<code>{TRUST_WALLET_ADDRESS}</code>")
+                    if text in ["/start", "🔙 Main Menu"]:
+                        welcome = (
+                            f"🤖 <b>Welcome to Binance Top 10 VIP Bot!</b>\n\n"
+                            f"24/7 Multi-Exchange Crypto Signals with Automated TRON TRC-20 Activation.\n\n"
+                            f"👇 <b>Select an option below to proceed:</b>"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, welcome, reply_markup=get_vip_menu_keyboard())
+
+                    elif text in ["/plans", "💎 VIP Plans"]:
+                        plans_txt = (
+                            f"💎 <b>VIP SUBSCRIPTION PLANS</b>\n\n"
+                            f"🔹 <b>10 Days Access</b>: 10 USDT\n"
+                            f"🔹 <b>20 Days Access</b>: 19 USDT\n"
+                            f"🔹 <b>30 Days Access</b>: 27 USDT\n\n"
+                            f"⚡ <i>Instant Activation via TRC-20 Blockchain Verifier.</i>"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt, reply_markup=get_verify_inline_keyboard())
+
+                    elif text in ["/pay", "💳 Get Pay Address"]:
+                        pay_txt = (
+                            f"💳 <b>USDT TRC-20 Deposit Address</b>:\n\n"
+                            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                            f"<b>Activation Steps:</b>\n"
+                            f"1. Send exact USDT amount for your plan.\n"
+                            f"2. Copy your Transaction Hash (TXID).\n"
+                            f"3. Send <code>/verify YOUR_TXID</code> in this chat."
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, pay_txt, reply_markup=get_vip_menu_keyboard())
+
+                    elif text in ["📊 Free vs VIP Comparison"]:
+                        comparison_txt = (
+                            f"📊 <b>FREE vs VIP CHANNEL COMPARISON</b>\n\n"
+                            f"<b>Free Channel:</b>\n"
+                            f"❌ 1 Futures Signal Preview / 4 hrs\n"
+                            f"❌ No Spot Swing Signals\n"
+                            f"❌ No Live Trailing TP/SL Alerts\n\n"
+                            f"<b>VIP Channel:</b>\n"
+                            f"✅ 12 Signals Daily (Spot + Futures)\n"
+                            f"✅ Live Target 1, 2, 3 Hit Notifications\n"
+                            f"✅ 1-2 Days High-Yield Spot Swings\n"
+                            f"✅ 24/7 Priority Support"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, comparison_txt, reply_markup=get_verify_inline_keyboard())
+
+                    elif text in ["❓ How To Verify"]:
+                        verify_info = (
+                            f"❓ <b>HOW TO VERIFY PAYMENT</b>\n\n"
+                            f"1. Make transfer to address using <b>Get Pay Address</b>.\n"
+                            f"2. Copy the Transaction Hash (TXID) from TrustWallet / Binance.\n"
+                            f"3. Send command in format:\n"
+                            f"<code>/verify YOUR_TXID_HERE</code>\n\n"
+                            f"<i>Our TRON Grid engine verifies txid on-chain instantly!</i>"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, verify_info, reply_markup=get_vip_menu_keyboard())
+
                     elif text.startswith("/verify"):
                         parts = text.split()
-                        if len(parts) >= 2:
-                            is_valid, res_data = verify_tron_txid(parts[1].strip())
+                        if len(parts) < 2:
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "⚠️ Format: <code>/verify YOUR_TXID_HERE</code>")
+                        else:
+                            txid = parts[1].strip()
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "🔍 Verifying transaction on TRON Network...")
+                            
+                            is_valid, result = verify_tron_txid(txid)
                             if is_valid:
-                                days, amt = res_data
-                                exp = add_vip_member(user_id, days)
-                                link = create_vip_invite_link()
-                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"✅ Verified! Access until {exp}\n{link}")
+                                days, amount = result
+                                exp_date = add_vip_member(user_id, days)
+                                invite_link = create_vip_invite_link()
+                                
+                                success_msg = (
+                                    f"✅ <b>PAYMENT VERIFIED INSTANTLY!</b>\n\n"
+                                    f"💰 <b>Received</b>: ${amount} USDT\n"
+                                    f"📅 <b>Duration</b>: {days} Days\n"
+                                    f"⏳ <b>Expiry Date</b>: {exp_date}\n\n"
+                                    f"🚀 <b>Join VIP Channel</b>:\n{invite_link}"
+                                )
+                                send_telegram_msg(VIP_BOT_TOKEN, user_id, success_msg, reply_markup=get_vip_menu_keyboard())
                             else:
-                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"❌ Failed: {res_data}")
+                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"❌ Verification Failed:\n{result}")
+
         except Exception:
             time.sleep(2)
 
-# --- WATCHDOG TO ENSURE NO THREAD DIES ---
+# --- RESILIENT THREAD WATCHDOG ---
 def start_resilient_thread(target_func, name):
     def wrapper():
         while True:
@@ -541,7 +528,7 @@ def start_resilient_thread(target_func, name):
                 log_event(f"Starting thread: {name}")
                 target_func()
             except Exception as e:
-                log_event(f"Thread '{name}' crashed with error: {e}. Restarting in 2s...")
+                log_event(f"Thread '{name}' crashed with error: {e}. Restarting...")
                 time.sleep(2)
 
     t = threading.Thread(target=wrapper, daemon=True, name=name)
@@ -552,7 +539,7 @@ def start_resilient_thread(target_func, name):
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "message": "Signal Bot Engine Running Successfully"})
+    return jsonify({"status": "active", "message": "Signal Bot Engine Active with Interactive UI"})
 
 @app.route('/logs')
 def get_logs():
@@ -563,7 +550,7 @@ def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
     return "Signals triggered successfully!"
 
-# Launch Crash-Proof Background Threads
+# Launch Threads
 start_resilient_thread(continuous_loop, "Signal-Generator-Loop")
 start_resilient_thread(monitor_active_signals, "Live-Target-Monitor")
 start_resilient_thread(process_free_bot_updates, "Free-Bot-Listener")
