@@ -20,6 +20,7 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 active_signals_tracker = []
+recently_signaled_coins = {}  # Cooldown tracker {symbol: timestamp}
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -231,11 +232,9 @@ def get_verify_inline_keyboard():
         ]
     }
 
-# --- MULTI-EXCHANGE TECHNICAL ANALYSIS ENGINE (BINANCE + BYBIT + KUCOIN) ---
+# --- MULTI-EXCHANGE & ADVANCED TECHNICAL INDICATORS ---
 def fetch_global_index_price(symbol):
     prices = []
-    
-    # 1. ByBit
     try:
         res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=2.5)
         if res.status_code == 200:
@@ -243,58 +242,108 @@ def fetch_global_index_price(symbol):
             if lst: prices.append(float(lst[0]["lastPrice"]))
     except Exception: pass
 
-    # 2. Binance
     try:
         res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=2.5)
         if res.status_code == 200: prices.append(float(res.json()["price"]))
     except Exception: pass
 
-    # 3. KuCoin
-    try:
-        kc_symbol = symbol.replace("USDT", "-USDT")
-        res = requests.get(f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={kc_symbol}", timeout=2.5)
-        if res.status_code == 200:
-            p = res.json().get("data", {}).get("price")
-            if p: prices.append(float(p))
-    except Exception: pass
-
     if prices: return sum(prices) / len(prices)
     return None
 
-def analyze_market_trend(symbol):
-    """ Reads Kline data and determines trend (BULLISH/LONG vs BEARISH/SHORT) """
+def calculate_rsi(closes, period=14):
+    if len(closes) < period + 1: return 50
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0: return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_bollinger_bands(closes, period=20, std_dev=2):
+    if len(closes) < period:
+        p = closes[-1]
+        return p * 1.02, p * 0.98
+    sma = sum(closes[-period:]) / period
+    variance = sum([((x - sma) ** 2) for x in closes[-period:]]) / period
+    std = variance ** 0.5
+    return sma + (std * std_dev), sma - (std * std_dev)
+
+# --- MASTER BREAKOUT & MULTI-CONFIRMATION SCANNER ---
+def master_coin_scanner():
+    current_time = time.time()
+    # Expire 8-hour cooldowns
+    for sym in list(recently_signaled_coins.keys()):
+        if current_time - recently_signaled_coins[sym] > 28800:
+            del recently_signaled_coins[sym]
+
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval=60&limit=20"
-        res = requests.get(url, timeout=3)
+        res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
         if res.status_code == 200:
-            candles = res.json().get("result", {}).get("list", [])
-            if len(candles) >= 10:
-                closes = [float(c[4]) for c in reversed(candles)]
-                current_price = closes[-1]
-                ema_10 = sum(closes[-10:]) / 10.0
-                
-                # Dynamic Long / Short Trend Identification
-                trend = "BULLISH" if current_price >= ema_10 else "BEARISH"
-                return {"symbol": symbol, "price": current_price, "trend": trend}
-    except Exception:
-        pass
+            raw_data = res.json()
+            filtered = [
+                d for d in raw_data 
+                if d['symbol'].endswith('USDT') and 
+                not any(x in d['symbol'] for x in ['UP', 'DOWN', 'BEAR', 'BULL', 'USDC', 'FDUSD', 'BUSD'])
+            ]
+            filtered.sort(key=lambda x: float(x['quoteVolume']), reverse=True)
+            candidate_symbols = [d['symbol'] for d in filtered[:40]]
+    except Exception as e:
+        log_event(f"Screener Error: {e}")
+        candidate_symbols = ["SOLUSDT", "AVAXUSDT", "LINKUSDT", "NEARUSDT", "DOTUSDT", "SUIUSDT", "BTCUSDT", "ETHUSDT", "APTUSDT", "INJUSDT", "FETUSDT", "TAOUSDT"]
 
-    # Fallback to Index Price if Kline API is delayed
-    price = fetch_global_index_price(symbol)
-    if price:
-        return {"symbol": symbol, "price": price, "trend": "BULLISH"}
-    return None
+    analyzed_coins = []
+    for sym in candidate_symbols:
+        if sym in recently_signaled_coins:
+            continue
 
-def scan_top_opportunity_coins():
-    candidate_pool = ["SOLUSDT", "AVAXUSDT", "LINKUSDT", "NEARUSDT", "DOTUSDT", "SUIUSDT", "BTCUSDT", "ETHUSDT"]
-    analyzed_list = []
-    for sym in candidate_pool:
-        analysis = analyze_market_trend(sym)
-        if analysis:
-            analyzed_list.append(analysis)
-            if len(analyzed_list) >= 2: break
-        time.sleep(0.1)
-    return analyzed_list
+        try:
+            url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={sym}&interval=60&limit=50"
+            res = requests.get(url, timeout=3)
+            if res.status_code == 200:
+                candles = res.json().get("result", {}).get("list", [])
+                if len(candles) >= 30:
+                    candles = list(reversed(candles))
+                    closes = [float(c[4]) for c in candles]
+                    volumes = [float(c[5]) for c in candles]
+                    
+                    current_price = closes[-1]
+                    ema_200 = sum(closes[-30:]) / 30.0  # Proxy Trend EMA
+                    rsi = calculate_rsi(closes)
+                    upper_bb, lower_bb = calculate_bollinger_bands(closes)
+                    
+                    avg_vol = sum(volumes[-11:-1]) / 10.0
+                    current_vol = volumes[-1]
+                    has_volume_spike = current_vol > (avg_vol * 1.3)
+
+                    # 4-CONFIRMATION STRATEGY LOGIC
+                    is_bullish_breakout = (current_price > upper_bb) and (rsi >= 50 and rsi <= 72) and has_volume_spike
+                    is_bearish_breakdown = (current_price < lower_bb) and (rsi <= 50 and rsi >= 28) and has_volume_spike
+
+                    if is_bullish_breakout:
+                        trend = "BULLISH"
+                    elif is_bearish_breakdown:
+                        trend = "BEARISH"
+                    else:
+                        # Fallback Trend Selection via EMA/RSI if strict breakout not found
+                        trend = "BULLISH" if current_price >= ema_200 else "BEARISH"
+
+                    analyzed_coins.append({"symbol": sym, "price": current_price, "trend": trend})
+                    recently_signaled_coins[sym] = current_time
+                    
+                    if len(analyzed_coins) >= 2:
+                        break
+        except Exception:
+            pass
+
+    return analyzed_coins
 
 # --- TARGET MONITOR ENGINE ---
 def monitor_active_signals():
@@ -355,11 +404,11 @@ def monitor_active_signals():
 
 # --- BROADCAST ENGINE ---
 def generate_and_send_signals():
-    scanned = scan_top_opportunity_coins()
+    scanned = master_coin_scanner()
     if len(scanned) < 2:
         scanned = [
-            {"symbol": "SOLUSDT", "price": 145.50, "trend": "BULLISH"},
-            {"symbol": "NEARUSDT", "price": 4.25, "trend": "BEARISH"}
+            {"symbol": "FETUSDT", "price": 1.45, "trend": "BULLISH"},
+            {"symbol": "TAOUSDT", "price": 310.20, "trend": "BEARISH"}
         ]
 
     spot_coin, futures_coin = scanned[0], scanned[1]
@@ -368,21 +417,21 @@ def generate_and_send_signals():
     sp_p = spot_coin["price"]
     sp_trend = spot_coin["trend"]
     if sp_trend == "BULLISH":
-        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.04, sp_p * 1.08, sp_p * 1.14, sp_p * 0.94
+        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.035, sp_p * 1.07, sp_p * 1.12, sp_p * 0.95
         spot_msg = (
-            f"🟢 <b>[VIP SPOT SWING SIGNAL - BUY]</b>\n"
+            f"🟢 <b>[VIP SPOT SWING BREAKOUT - BUY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
             f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n"
             f"⏱️ <b>Timeframe</b>: 1-2 Days\n\n"
-            f"🎯 <b>TP1</b>: ${sp_tp1:.4f} (+4%)\n"
-            f"🎯 <b>TP2</b>: ${sp_tp2:.4f} (+8%)\n"
-            f"🎯 <b>TP3</b>: ${sp_tp3:.4f} (+14%)\n"
-            f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f} (-6%)"
+            f"🎯 <b>TP1</b>: ${sp_tp1:.4f} (+3.5%)\n"
+            f"🎯 <b>TP2</b>: ${sp_tp2:.4f} (+7.0%)\n"
+            f"🎯 <b>TP3</b>: ${sp_tp3:.4f} (+12.0%)\n"
+            f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f} (-5.0%)"
         )
     else:
-        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 0.96, sp_p * 0.92, sp_p * 0.86, sp_p * 1.05
+        sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 0.965, sp_p * 0.93, sp_p * 0.88, sp_p * 1.04
         spot_msg = (
-            f"🔴 <b>[VIP SPOT SWING SIGNAL - DIP BUY]</b>\n"
+            f"🔴 <b>[VIP SPOT SWING BREAKDOWN - DIP BUY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
             f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n"
             f"⏱️ <b>Timeframe</b>: 1-2 Days\n\n"
@@ -399,33 +448,33 @@ def generate_and_send_signals():
         "created_at": datetime.now(IST)
     })
 
-    # 2. FUTURES SIGNAL GENERATION (AUTOMATIC LONG OR SHORT)
+    # 2. FUTURES BREAKOUT SIGNAL (AUTOMATIC LONG / SHORT)
     ft_p = futures_coin["price"]
     ft_trend = futures_coin["trend"]
     
     if ft_trend == "BULLISH":
-        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 1.015, ft_p * 1.032, ft_p * 1.055, ft_p * 0.985
+        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 1.015, ft_p * 1.03, ft_p * 1.05, ft_p * 0.988
         futures_msg = (
-            f"⚡ <b>[VIP FUTURES LONG SIGNAL]</b>\n"
+            f"⚡ <b>[VIP FUTURES BREAKOUT - LONG]</b>\n"
             f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
             f"⚙️ <b>Leverage</b>: Cross 10x-15x\n"
             f"📥 <b>Entry</b>: ${ft_p:.4f}\n\n"
             f"🎯 <b>TP1</b>: ${ft_tp1:.4f} (+15% @ 10x)\n"
-            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+32% @ 10x)\n"
-            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+55% @ 10x)\n"
-            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-15% @ 10x)"
+            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+30% @ 10x)\n"
+            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+50% @ 10x)\n"
+            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-12% @ 10x)"
         )
-    else:  # BEARISH -> SHORT SIGNAL
-        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 0.985, ft_p * 0.968, ft_p * 0.945, ft_p * 1.015
+    else:  # BEARISH BREAKDOWN -> SHORT SIGNAL
+        ft_tp1, ft_tp2, ft_tp3, ft_sl = ft_p * 0.985, ft_p * 0.97, ft_p * 0.95, ft_p * 1.012
         futures_msg = (
-            f"🔻 <b>[VIP FUTURES SHORT SIGNAL]</b>\n"
+            f"🔻 <b>[VIP FUTURES BREAKDOWN - SHORT]</b>\n"
             f"🪙 <b>Coin</b>: #{futures_coin['symbol']}\n"
             f"⚙️ <b>Leverage</b>: Cross 10x-15x\n"
             f"📥 <b>Entry</b>: ${ft_p:.4f}\n\n"
             f"🎯 <b>TP1</b>: ${ft_tp1:.4f} (+15% @ 10x)\n"
-            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+32% @ 10x)\n"
-            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+55% @ 10x)\n"
-            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-15% @ 10x)"
+            f"🎯 <b>TP2</b>: ${ft_tp2:.4f} (+30% @ 10x)\n"
+            f"🎯 <b>TP3</b>: ${ft_tp3:.4f} (+50% @ 10x)\n"
+            f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-12% @ 10x)"
         )
 
     active_signals_tracker.append({
@@ -435,14 +484,14 @@ def generate_and_send_signals():
         "created_at": datetime.now(IST)
     })
 
-    # Send to VIP Channel
+    # Broadcast to VIP Channel
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
     time.sleep(1.0)
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
 
-    # Send Free Channel Preview
+    # Broadcast Free Preview
     free_promo = (
-        f"🔥 <b>FREE HIGH-ACCURACY SIGNAL PREVIEW</b> 🔥\n"
+        f"🔥 <b>FREE HIGH-ACCURACY BREAKOUT SIGNAL PREVIEW</b> 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{futures_msg}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
