@@ -3,12 +3,12 @@ import requests
 import sqlite3
 import os
 import threading
-import traceback
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==========================================
-# 1. CONFIGURATION & TELEGRAM INITIALIZATION
+# 1. CONFIGURATION & BOT INITIALIZATION
 # ==========================================
 FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
@@ -33,7 +33,7 @@ def log_event(message):
     print(entry)
 
 # ==========================================
-# 2. DATABASE ARCHITECTURE & HELPERS
+# 2. DATABASE ARCHITECTURE
 # ==========================================
 def init_db():
     try:
@@ -61,7 +61,7 @@ def init_db():
         ''')
         conn.commit()
         conn.close()
-        log_event("Database & Precise Price Engine initialized.")
+        log_event("Database & Non-Blocking Engine initialized.")
     except Exception as e:
         log_event(f"DB Error: {e}")
 
@@ -140,11 +140,11 @@ def purge_day1_oldest_messages():
         log_event(f"Purge Error: {e}")
 
 # ==========================================
-# 3. TRON BLOCKCHAIN AUTOMATIC VERIFIER
+# 3. TRON VERIFIER ENGINE
 # ==========================================
 def verify_tron_txid(txid):
     if is_txid_processed(txid):
-        return False, "This Transaction Hash (TXID) has already been used!"
+        return False, "This TXID has already been processed!"
 
     url = f"https://api.trongrid.io/v1/accounts/{TRUST_WALLET_ADDRESS}/transactions/trc20"
     try:
@@ -174,7 +174,7 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. TELEGRAM API COMMUNICATION ENGINE
+# 4. TELEGRAM API COMMUNICATION
 # ==========================================
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -230,18 +230,15 @@ def get_verify_inline_keyboard():
     }
 
 # ==========================================
-# 5. LIVE TICK PRICE ENGINE (ACCURACY FIX)
+# 5. DYNAMIC REAL-TIME PRICE ENGINE
 # ==========================================
 def get_live_ticker_price(symbol):
-    """Fetches instant live price directly from Binance/Bybit tickers"""
-    # Attempt 1: Binance Direct Ticker
     try:
         res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1.5)
         if res.status_code == 200:
             return float(res.json()["price"])
     except Exception: pass
 
-    # Attempt 2: Bybit Direct Ticker
     try:
         res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=1.5)
         if res.status_code == 200:
@@ -252,7 +249,7 @@ def get_live_ticker_price(symbol):
 
     return None
 
-def fetch_from_binance_candles(symbol, timeframe="1h"):
+def fetch_multi_exchange_candles(symbol, timeframe="1h"):
     try:
         interval = "1h" if timeframe == "1h" else "4h"
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=30"
@@ -260,25 +257,6 @@ def fetch_from_binance_candles(symbol, timeframe="1h"):
         if res.status_code == 200:
             return [float(c[4]) for c in res.json()]
     except Exception: pass
-    return None
-
-def fetch_from_bybit_candles(symbol, timeframe="1h"):
-    try:
-        interval = "60" if timeframe == "1h" else "240"
-        url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit=30"
-        res = requests.get(url, timeout=1.8)
-        if res.status_code == 200:
-            data = res.json().get("result", {}).get("list", [])
-            if data:
-                return [float(c[4]) for c in reversed(data)]
-    except Exception: pass
-    return None
-
-def fetch_multi_exchange_candles(symbol, timeframe="1h"):
-    for fetcher in [fetch_from_binance_candles, fetch_from_bybit_candles]:
-        closes = fetcher(symbol, timeframe)
-        if closes and len(closes) >= 20:
-            return closes
     return None
 
 def calculate_rsi(closes, period=14):
@@ -295,7 +273,6 @@ def calculate_rsi(closes, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def master_coin_scanner():
-    """High Precision Scanner with Real-Time Ticker Integration"""
     current_time = time.time()
     for sym in list(recently_signaled_coins.keys()):
         if current_time - recently_signaled_coins[sym] > 28800:
@@ -317,17 +294,16 @@ def master_coin_scanner():
             ema_20_4h = sum(closes_4h[-20:]) / 20.0
             rsi = calculate_rsi(closes_1h)
 
-            if live_price > ema_20_1h and live_price > ema_20_4h and (52 <= rsi <= 68):
+            if live_price > ema_20_1h and live_price > ema_20_4h and (50 <= rsi <= 70):
                 analyzed_coins.append({"symbol": sym, "price": live_price, "trend": "BULLISH", "rsi": rsi})
                 recently_signaled_coins[sym] = current_time
-            elif live_price < ema_20_1h and live_price < ema_20_4h and (32 <= rsi <= 48):
+            elif live_price < ema_20_1h and live_price < ema_20_4h and (30 <= rsi <= 50):
                 analyzed_coins.append({"symbol": sym, "price": live_price, "trend": "BEARISH", "rsi": rsi})
                 recently_signaled_coins[sym] = current_time
 
             if len(analyzed_coins) >= 2:
                 break
 
-    # Dynamic Live Fallback (No Static Hardcoded Prices)
     if len(analyzed_coins) < 2:
         for sym in ["SOLUSDT", "ETHUSDT", "BTCUSDT"]:
             if len(analyzed_coins) >= 2: break
@@ -338,81 +314,24 @@ def master_coin_scanner():
     return analyzed_coins
 
 # ==========================================
-# 6. REAL-TIME TARGET/SL MONITORING ENGINE
-# ==========================================
-def monitor_active_signals():
-    global active_signals_tracker
-    while True:
-        try:
-            if active_signals_tracker:
-                current_time = datetime.now(IST)
-                for sig in list(active_signals_tracker):
-                    if (current_time - sig["created_at"]).total_seconds() > 86400:
-                        active_signals_tracker.remove(sig)
-                        continue
-
-                    symbol = sig["symbol"]
-                    current_price = get_live_ticker_price(symbol)
-                    if not current_price: continue
-
-                    signal_type, trend = sig["type"], sig["trend"]
-                    tp1, tp2, tp3, sl = sig["tp1"], sig["tp2"], sig["tp3"], sig["sl"]
-                    hit_update = None
-
-                    if trend == "BULLISH":
-                        if not sig["tp1_hit"] and current_price >= tp1:
-                            sig["tp1_hit"] = True
-                            hit_update = f"🚀 <b>#{symbol} TARGET 1 HIT! ({signal_type})</b>\n🎯 Reached: <b>${tp1:.4f}</b> ✅"
-                        elif sig["tp1_hit"] and not sig["tp2_hit"] and current_price >= tp2:
-                            sig["tp2_hit"] = True
-                            hit_update = f"🔥 <b>#{symbol} TARGET 2 HIT! ({signal_type})</b>\n🎯 Reached: <b>${tp2:.4f}</b> 🔥"
-                        elif sig["tp2_hit"] and not sig["tp3_hit"] and current_price >= tp3:
-                            sig["tp3_hit"] = True
-                            hit_update = f"🎯 <b>#{symbol} ALL TARGETS COMPLETED! ({signal_type})</b>\n🏆 Reached: <b>${tp3:.4f}</b> 🏆"
-                        elif not sig["sl_hit"] and current_price <= sl:
-                            sig["sl_hit"] = True
-                            hit_update = f"⛔ <b>#{symbol} STOP LOSS HIT ({signal_type})</b>\nPrice: <b>${sl:.4f}</b> (Capital Safe)"
-                    else:
-                        if not sig["tp1_hit"] and current_price <= tp1:
-                            sig["tp1_hit"] = True
-                            hit_update = f"🚀 <b>#{symbol} TARGET 1 HIT! ({signal_type})</b>\n🎯 Reached: <b>${tp1:.4f}</b> ✅"
-                        elif sig["tp1_hit"] and not sig["tp2_hit"] and current_price <= tp2:
-                            sig["tp2_hit"] = True
-                            hit_update = f"🔥 <b>#{symbol} TARGET 2 HIT! ({signal_type})</b>\n🎯 Reached: <b>${tp2:.4f}</b> 🔥"
-                        elif sig["tp2_hit"] and not sig["tp3_hit"] and current_price <= tp3:
-                            sig["tp3_hit"] = True
-                            hit_update = f"🎯 <b>#{symbol} ALL TARGETS COMPLETED! ({signal_type})</b>\n🏆 Reached: <b>${tp3:.4f}</b> 🏆"
-                        elif not sig["sl_hit"] and current_price >= sl:
-                            sig["sl_hit"] = True
-                            hit_update = f"⛔ <b>#{symbol} STOP LOSS HIT ({signal_type})</b>\nPrice: <b>${sl:.4f}</b> (Capital Safe)"
-
-                    if hit_update:
-                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, hit_update, is_channel=True)
-                        if signal_type == "FUTURES":
-                            send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, hit_update, is_channel=True)
-
-            purge_day1_oldest_messages()
-        except Exception as e:
-            log_event(f"Monitor Loop Error: {e}")
-        time.sleep(20)
-
-# ==========================================
-# 7. SIGNAL BROADCASTER ENGINE
+# 6. SIGNAL BROADCASTER ENGINE
 # ==========================================
 def generate_and_send_signals():
+    log_event("Executing Scheduled Signal Scanner...")
     scanned = master_coin_scanner()
     if len(scanned) < 2:
+        log_event("Insufficient market candidates found for signals.")
         return
 
     spot_coin, futures_coin = scanned[0], scanned[1]
 
-    # --- SPOT SIGNAL DESIGN ---
+    # --- SPOT SIGNAL ---
     sp_p = spot_coin["price"]
     sp_trend = spot_coin["trend"]
     if sp_trend == "BULLISH":
         sp_tp1, sp_tp2, sp_tp3, sp_sl = sp_p * 1.03, sp_p * 1.06, sp_p * 1.10, sp_p * 0.975
         spot_msg = (
-            f"🟢 <b>[VIP SPOT SWING SIGNAL - HIGH ACCURACY]</b>\n"
+            f"🟢 <b>[VIP SPOT SWING SIGNAL]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
             f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n"
             f"⏱️ <b>Timeframe</b>: 1-2 Days\n\n"
@@ -426,22 +345,14 @@ def generate_and_send_signals():
         spot_msg = (
             f"🔴 <b>[VIP SPOT SWING SIGNAL - DIP BUY]</b>\n"
             f"🪙 <b>Coin</b>: #{spot_coin['symbol']}\n"
-            f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n"
-            f"⏱️ <b>Timeframe</b>: 1-2 Days\n\n"
+            f"📥 <b>Entry Zone</b>: ${sp_p:.4f}\n\n"
             f"🎯 <b>TP1</b>: ${sp_tp1:.4f}\n"
             f"🎯 <b>TP2</b>: ${sp_tp2:.4f}\n"
             f"🎯 <b>TP3</b>: ${sp_tp3:.4f}\n"
             f"⛔ <b>Stop Loss</b>: ${sp_sl:.4f}"
         )
 
-    active_signals_tracker.append({
-        "symbol": spot_coin["symbol"], "type": "SPOT", "trend": sp_trend,
-        "tp1": sp_tp1, "tp2": sp_tp2, "tp3": sp_tp3, "sl": sp_sl,
-        "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
-        "created_at": datetime.now(IST)
-    })
-
-    # --- FUTURES SIGNAL DESIGN ---
+    # --- FUTURES SIGNAL ---
     ft_p = futures_coin["price"]
     ft_trend = futures_coin["trend"]
     if ft_trend == "BULLISH":
@@ -469,13 +380,6 @@ def generate_and_send_signals():
             f"⛔ <b>Stop Loss</b>: ${ft_sl:.4f} (-12% @ 10x)"
         )
 
-    active_signals_tracker.append({
-        "symbol": futures_coin["symbol"], "type": "FUTURES", "trend": ft_trend,
-        "tp1": ft_tp1, "tp2": ft_tp2, "tp3": ft_tp3, "sl": ft_sl,
-        "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "sl_hit": False,
-        "created_at": datetime.now(IST)
-    })
-
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
     time.sleep(0.5)
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
@@ -490,25 +394,17 @@ def generate_and_send_signals():
         f"👉 <b>Join VIP Bot:</b> @BinanceTop10_VIPBot"
     )
     send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
-
-def continuous_loop():
-    time.sleep(5)
-    while True:
-        try:
-            generate_and_send_signals()
-        except Exception as e:
-            log_event(f"Loop Exception: {e}")
-        time.sleep(14400)
+    log_event("Signals successfully broadcasted to Channels.")
 
 # ==========================================
-# 8. TELEGRAM BOT LISTENERS
+# 7. TELEGRAM BOT LISTENERS
 # ==========================================
 def process_free_bot_updates():
     offset = None
     while True:
         try:
             url = f"https://api.telegram.org/bot{FREE_BOT_TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout": 6, "offset": offset}, timeout=8.0)
+            res = requests.get(url, params={"timeout": 5, "offset": offset}, timeout=6.0)
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
@@ -530,7 +426,7 @@ def process_bot_updates():
     while True:
         try:
             url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout": 6, "offset": offset}, timeout=8.0)
+            res = requests.get(url, params={"timeout": 5, "offset": offset}, timeout=6.0)
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
@@ -585,38 +481,6 @@ def process_bot_updates():
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, pay_txt, reply_markup=get_vip_menu_keyboard())
 
-                    elif text in ["📊 Free vs VIP Comparison"]:
-                        comparison_txt = (
-                            f"📊 <b>FREE vs VIP CHANNEL COMPARISON</b>\n\n"
-                            f"❌ <b>FREE CHANNEL</b>\n"
-                            f"├ ⚠️ Only 1 Signal Preview / day\n"
-                            f"├ ⚠️ Delayed Entry & Exit Targets\n"
-                            f"├ ❌ No Live TP1 / TP2 / TP3 Alerts\n"
-                            f"├ ❌ No Spot Swing Signals\n"
-                            f"└ ❌ No Priority Support\n\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"👑 <b>VIP CHANNEL (PREMIUM)</b>\n"
-                            f"├ 💎 <b>10-15 High-Accuracy Signals Daily</b>\n"
-                            f"├ 🎯 <b>Spot + Futures (Leverage Guidance)</b>\n"
-                            f"├ ⚡ <b>Real-Time Live Target & SL Alerts</b>\n"
-                            f"├ 📈 <b>Exclusive High-Yield Spot Swings</b>\n"
-                            f"├ 🧠 <b>Market Updates & Risk Management</b>\n"
-                            f"└ 💬 <b>24/7 VIP Priority Support</b>\n\n"
-                            f"🔥 <i>Upgrade now to maximize your trading profits!</i>"
-                        )
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, comparison_txt, reply_markup=get_verify_inline_keyboard())
-
-                    elif text in ["❓ How To Verify"]:
-                        verify_info = (
-                            f"❓ <b>HOW TO VERIFY PAYMENT</b>\n\n"
-                            f"1. Make transfer to address using <b>Get Pay Address</b>.\n"
-                            f"2. Copy the Transaction Hash (TXID) from TrustWallet / Binance.\n"
-                            f"3. Send command in format:\n"
-                            f"<code>/verify YOUR_TXID_HERE</code>\n\n"
-                            f"<i>Our TRON Grid engine verifies txid on-chain instantly!</i>"
-                        )
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, verify_info, reply_markup=get_vip_menu_keyboard())
-
                     elif text.startswith("/verify"):
                         parts = text.split()
                         if len(parts) < 2:
@@ -646,26 +510,21 @@ def process_bot_updates():
             time.sleep(2)
 
 # ==========================================
-# 9. THREAD MANAGEMENT & FLASK CONTROLLER
+# 8. NON-BLOCKING SCHEDULER & FLASK CONTROLLER
 # ==========================================
-def start_resilient_thread(target_func, name):
-    def wrapper():
-        while True:
-            try:
-                log_event(f"Starting thread: {name}")
-                target_func()
-            except Exception as e:
-                log_event(f"Thread '{name}' crashed with error: {e}. Restarting...")
-                time.sleep(2)
+scheduler = BackgroundScheduler(daemon=True)
+scheduler.add_job(generate_and_send_signals, 'interval', hours=4)
+scheduler.start()
 
-    t = threading.Thread(target=wrapper, daemon=True, name=name)
+def start_resilient_thread(target_func, name):
+    t = threading.Thread(target=target_func, daemon=True, name=name)
     t.start()
     return t
 
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "message": "High Precision Real-Time Price Engine Operating Normal"})
+    return jsonify({"status": "active", "scheduler": "running"})
 
 @app.route('/logs')
 def get_logs():
@@ -674,10 +533,8 @@ def get_logs():
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
-    return "High Precision Signal triggered successfully!"
+    return "Signal process triggered successfully!"
 
-start_resilient_thread(continuous_loop, "Signal-Generator-Loop")
-start_resilient_thread(monitor_active_signals, "Live-Target-Monitor")
 start_resilient_thread(process_free_bot_updates, "Free-Bot-Listener")
 start_resilient_thread(process_bot_updates, "VIP-Bot-Listener")
 
