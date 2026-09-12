@@ -513,7 +513,8 @@ def process_bot_updates():
 # 8. NON-BLOCKING SCHEDULER & FLASK CONTROLLER
 # ==========================================
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(generate_and_send_signals, 'interval', hours=4)
+# Immediatly triggers signal upon start (next_run_time=now), then repeats every 4 hours
+scheduler.add_job(generate_and_send_signals, 'interval', hours=4, next_run_time=datetime.now(IST))
 scheduler.start()
 
 def start_resilient_thread(target_func, name):
