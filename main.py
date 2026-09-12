@@ -231,29 +231,41 @@ def get_verify_inline_keyboard():
         ]
     }
 
-# --- MULTI-EXCHANGE TECHNICAL ANALYSIS ENGINE ---
+# --- MULTI-EXCHANGE TECHNICAL ANALYSIS ENGINE (BINANCE + BYBIT + KUCOIN) ---
 def fetch_global_index_price(symbol):
     prices = []
+    
+    # 1. ByBit
     try:
-        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3)
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=2.5)
         if res.status_code == 200:
             lst = res.json().get("result", {}).get("list", [])
             if lst: prices.append(float(lst[0]["lastPrice"]))
     except Exception: pass
 
+    # 2. Binance
     try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=3)
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=2.5)
         if res.status_code == 200: prices.append(float(res.json()["price"]))
+    except Exception: pass
+
+    # 3. KuCoin
+    try:
+        kc_symbol = symbol.replace("USDT", "-USDT")
+        res = requests.get(f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={kc_symbol}", timeout=2.5)
+        if res.status_code == 200:
+            p = res.json().get("data", {}).get("price")
+            if p: prices.append(float(p))
     except Exception: pass
 
     if prices: return sum(prices) / len(prices)
     return None
 
 def analyze_market_trend(symbol):
-    """ Fetches Kline data from ByBit and determines trend (BULLISH/LONG or BEARISH/SHORT) """
+    """ Reads Kline data and determines trend (BULLISH/LONG vs BEARISH/SHORT) """
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval=60&limit=20"
-        res = requests.get(url, timeout=4)
+        res = requests.get(url, timeout=3)
         if res.status_code == 200:
             candles = res.json().get("result", {}).get("list", [])
             if len(candles) >= 10:
@@ -261,13 +273,13 @@ def analyze_market_trend(symbol):
                 current_price = closes[-1]
                 ema_10 = sum(closes[-10:]) / 10.0
                 
-                # Determine market side dynamically
+                # Dynamic Long / Short Trend Identification
                 trend = "BULLISH" if current_price >= ema_10 else "BEARISH"
                 return {"symbol": symbol, "price": current_price, "trend": trend}
     except Exception:
         pass
 
-    # Fallback to current global price with default trend
+    # Fallback to Index Price if Kline API is delayed
     price = fetch_global_index_price(symbol)
     if price:
         return {"symbol": symbol, "price": price, "trend": "BULLISH"}
@@ -352,7 +364,7 @@ def generate_and_send_signals():
 
     spot_coin, futures_coin = scanned[0], scanned[1]
 
-    # 1. SPOT SIGNAL GENERATION
+    # 1. SPOT SWING SIGNAL GENERATION
     sp_p = spot_coin["price"]
     sp_trend = spot_coin["trend"]
     if sp_trend == "BULLISH":
@@ -387,7 +399,7 @@ def generate_and_send_signals():
         "created_at": datetime.now(IST)
     })
 
-    # 2. FUTURES SIGNAL GENERATION (DYNAMIC LONG / SHORT)
+    # 2. FUTURES SIGNAL GENERATION (AUTOMATIC LONG OR SHORT)
     ft_p = futures_coin["price"]
     ft_trend = futures_coin["trend"]
     
@@ -423,12 +435,12 @@ def generate_and_send_signals():
         "created_at": datetime.now(IST)
     })
 
-    # Post to VIP Channel
+    # Send to VIP Channel
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
     time.sleep(1.0)
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
 
-    # Post Free Channel Preview
+    # Send Free Channel Preview
     free_promo = (
         f"🔥 <b>FREE HIGH-ACCURACY SIGNAL PREVIEW</b> 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
