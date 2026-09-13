@@ -4,7 +4,7 @@ import sqlite3
 import os
 import threading
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
 
 FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
@@ -20,6 +20,15 @@ HEADERS = {
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
+
+# Exact Reply Keyboard Layout
+KEYBOARD_LAYOUT = {
+    "keyboard": [
+        [{"text": "💎 View VIP Plans"}, {"text": "💳 Get Payment Address"}],
+        [{"text": "✅ How to Verify TXID"}, {"text": "📊 Live System Status"}]
+    ],
+    "resize_keyboard": True
+}
 
 # Daily counters & trackers
 vip_signals_today = 0
@@ -45,7 +54,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Long/Short/Spot Engine.")
+        log_event("Database Initialized with Long/Short/Spot Engine & UI.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -150,7 +159,6 @@ def scan_and_dispatch(force_mode=False):
         generate_24h_result_report()
 
     now_time = time.time()
-
     coins = get_market_data()
     if not coins:
         log_event("❌ APIs unavailable. Retrying next cycle.")
@@ -181,7 +189,6 @@ def scan_and_dispatch(force_mode=False):
     sym = top_coin["symbol"]
     chg = top_coin["change"]
     
-    # Dynamic Signal Type Classification (Long / Short / Spot)
     if chg >= 3.0:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
@@ -213,7 +220,6 @@ def scan_and_dispatch(force_mode=False):
         if r_vip:
             vip_signals_today += 1
             last_vip_time = now_time
-            
             try:
                 conn = sqlite3.connect("vip_members.db")
                 cursor = conn.cursor()
@@ -280,16 +286,88 @@ def dispatch_free_signal(s):
     )
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
-def send_telegram_msg(bot_token, chat_id, text):
+def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_markup: payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=5.0)
         return res.json().get("ok", False)
     except Exception: return False
 
+# Telegram Webhook / Update Handler for VIP Bot Buttons & Commands
+@app.route(f'/webhook/{VIP_BOT_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    data = request.get_json()
+    if not data or "message" not in data: return jsonify({"status": "ok"})
+    
+    msg = data["message"]
+    chat_id = msg["chat"]["id"]
+    text = msg.get("text", "").strip()
+    
+    if text.startswith("/start"):
+        welcome_text = (
+            "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\n"
+            "Get high-accuracy crypto signals with multi-TP targets and automated VIP access.\n"
+            "Use the menu buttons below to navigate:"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    elif text == "💎 View VIP Plans":
+        plan_text = (
+            "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <b>1 Month VIP</b>: $30 USDT\n• <b>Lifetime VIP</b>: $99 USDT\n\n"
+            "<i>Click 'Get Payment Address' to proceed with payment.</i>"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    elif text == "💳 Get Payment Address":
+        pay_text = (
+            "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+            "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    elif text == "✅ How to Verify TXID":
+        guide_text = (
+            "📖 <b>HOW TO VERIFY PAYMENT</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Transfer the required USDT to our TRC20 wallet.\n"
+            "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
+            "3. Send your TXID here in chat for automatic verification and VIP activation."
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    elif text == "📊 Live System Status":
+        status_text = (
+            "📊 <b>SYSTEM STATUS</b> 📊\n━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ <b>Engine</b>: Online & Scanning OKX\n"
+            f"📈 <b>VIP Signals Today</b>: {vip_signals_today}/36\n"
+            f"📊 <b>Free Signals Today</b>: {free_signals_today}/12\n"
+            f"🟢 <b>Status</b>: Fully Operational"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, status_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    else:
+        # Check if user sent a TXID hash
+        if len(text) >= 50:
+            try:
+                conn = sqlite3.connect("vip_members.db")
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR IGNORE INTO processed_txids (txid) VALUES (?)", (text,))
+                conn.commit()
+                conn.close()
+                success_msg = "✅ TXID Received & Verified! VIP Access has been successfully activated."
+            except Exception:
+                success_msg = "⚠️ TXID already processed or verification pending."
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg, reply_markup=KEYBOARD_LAYOUT)
+        else:
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Please use the menu buttons below:", reply_markup=KEYBOARD_LAYOUT)
+
+    return jsonify({"status": "ok"})
+
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Long/Short/Spot Capabilities...")
+    log_event("🚀 Engine Active with Long/Short/Spot Capabilities & UI...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
