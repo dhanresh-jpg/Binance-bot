@@ -273,13 +273,15 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
         payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
-        res = requests.post(url, json=payload, timeout=5.0)
+        res = requests.post(url, json=payload, timeout=10.0)
         data = res.json()
         if not data.get("ok", False):
-            log_event(f"Telegram API Error for {chat_id}: {data.get('description')}")
+            log_event(f"❌ Telegram Send FAILED for {chat_id}: Code {res.status_code} - {data.get('description')}")
+        else:
+            log_event(f"✅ Telegram Message Sent Successfully to {chat_id}")
         return data.get("ok", False)
     except Exception as e:
-        log_event(f"Telegram Send Exception: {e}")
+        log_event(f"🚨 Telegram Send Exception: {e}")
         return False
 
 def kick_telegram_user(chat_id, user_id):
