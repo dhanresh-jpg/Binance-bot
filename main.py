@@ -166,7 +166,7 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    top_coin = coins[0] # Pick first valid coin directly in force mode
+    top_coin = coins[0]
     p = top_coin["price"]
     sym = top_coin["symbol"]
     chg = top_coin["change"]
@@ -195,21 +195,20 @@ def scan_and_dispatch(force_mode=False):
     }
 
     log_event(f"📢 Dispatching signal for {sym} (Mode: {signal_mode})...")
-    r_vip = dispatch_vip_signal(setup)
-    r_free = dispatch_free_signal(setup)
+    dispatch_vip_signal(setup)
+    dispatch_free_signal(setup)
     
-    if r_vip or force_mode:
-        try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
-            cursor = conn.cursor()
-            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                           (sym, p, tp1, sl, now_time, now_str))
-            conn.commit()
-            conn.close()
-            log_event(f"✅ Signal history saved for {sym}")
-        except Exception as e:
-            log_event(f"History Save Error: {e}")
+    try:
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        cursor = conn.cursor()
+        now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                       (sym, p, tp1, sl, now_time, now_str))
+        conn.commit()
+        conn.close()
+        log_event(f"✅ Signal history saved for {sym}")
+    except Exception as e:
+        log_event(f"History Save Error: {e}")
 
 def dispatch_vip_signal(s):
     msg = (
@@ -262,10 +261,18 @@ def dispatch_free_signal(s):
     log_event(f"Free Signal Dispatch Status: {res}")
     return res
 
-def send_telegram_msg(bot_token, chat_id, text, reply_markup=KEYBOARD_LAYOUT):
+def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if reply_markup: payload["reply_markup"] = reply_markup
+    
+    # Channels (negative IDs) do not support standard reply keyboards
+    if str(chat_id).startswith("-"):
+        pass  # No keyboard for channels
+    elif reply_markup:
+        payload["reply_markup"] = reply_markup
+    else:
+        payload["reply_markup"] = KEYBOARD_LAYOUT
+
     try:
         res = requests.post(url, json=payload, timeout=5.0)
         data = res.json()
