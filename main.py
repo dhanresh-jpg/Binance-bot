@@ -363,74 +363,65 @@ def membership_expiry_checker():
             log_event(f"Expiry Checker Error: {e}")
         time.sleep(3600)
 
-@app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    data = request.get_json()
-    if not data or "message" not in data: return jsonify({"status": "ok"})
-    
-    msg = data["message"]
-    chat_id = msg["chat"]["id"]
-    text = msg.get("text", "").strip()
-    
-    if text.startswith("/start"):
-        welcome_text = (
-            "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\n"
-            "Get high-accuracy crypto signals with multi-TP targets and automated VIP access.\n"
-            "Use the menu buttons below to navigate:"
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text)
-        
-    elif "View VIP Plans" in text:
-        plan_text = (
-            "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "• <b>10 Days VIP</b>: $10 USDT\n"
-            "• <b>20 Days VIP</b>: $19 USDT\n"
-            "• <b>30 Days VIP</b>: $28 USDT\n\n"
-            "<i>Click 'Get Payment Address' to proceed with payment.</i>"
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text)
-        
-    elif "Get Payment Address" in text:
-        pay_text = (
-            "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-            "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text)
-        
-    elif "Verify Payment" in text:
-        verify_text = (
-            "🔍 <b>PAYMENT VERIFICATION</b> 🔍\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "Please send your <b>Transaction ID (TXID)</b> right here in the chat.\n\n"
-            "Our automated system will instantly verify your TRC20 transfer and activate your VIP access!"
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text)
-        
-    elif "How to Verify TXID" in text:
-        guide_text = (
-            "📖 <b>HOW TO VERIFY PAYMENT</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "1. Transfer the required USDT to our TRC20 wallet.\n"
-            "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
-            "3. Send your TXID here in chat for automatic verification and VIP activation."
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
-        
-    else:
-        # Any text sent by the user (even if typed directly when keyboard was hidden) 
-        # is now automatically treated as a potential TXID/Hash for instant verification!
-        txid = text.strip()
-        try:
+def process_message_async(chat_id, text):
+    """Background worker to handle messages instantly without blocking the webhook"""
+    try:
+        if text.startswith("/start"):
+            welcome_text = (
+                "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\n"
+                "Get high-accuracy crypto signals with multi-TP targets and automated VIP access.\n"
+                "Use the menu buttons below to navigate:"
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text)
+            
+        elif "View VIP Plans" in text:
+            plan_text = (
+                "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "• <b>10 Days VIP</b>: $10 USDT\n"
+                "• <b>20 Days VIP</b>: $19 USDT\n"
+                "• <b>30 Days VIP</b>: $28 USDT\n\n"
+                "<i>Click 'Get Payment Address' to proceed with payment.</i>"
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text)
+            
+        elif "Get Payment Address" in text:
+            pay_text = (
+                "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text)
+            
+        elif "Verify Payment" in text:
+            verify_text = (
+                "🔍 <b>PAYMENT VERIFICATION</b> 🔍\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "Please send your <b>Transaction ID (TXID)</b> right here in the chat.\n\n"
+                "Our automated system will instantly verify your TRC20 transfer and activate your VIP access!"
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text)
+            
+        elif "How to Verify TXID" in text:
+            guide_text = (
+                "📖 <b>HOW TO VERIFY PAYMENT</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "1. Transfer the required USDT to our TRC20 wallet.\n"
+                "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
+                "3. Send your TXID here in chat for automatic verification and VIP activation."
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
+            
+        else:
+            txid = text.strip()
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
                 conn.close()
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Transaction ID (TXID) has already been used!")
-                return jsonify({"status": "ok"})
+                return
                 
             is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
             
@@ -471,10 +462,22 @@ def telegram_webhook():
                     "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
-        except Exception as e:
-            log_event(f"Webhook TXID Processing Error: {e}")
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "❌ An error occurred during verification. Please try again.")
+    except Exception as e:
+        log_event(f"Async Processing Error: {e}")
 
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    data = request.get_json()
+    if not data or "message" not in data: return jsonify({"status": "ok"})
+    
+    msg = data["message"]
+    chat_id = msg["chat"]["id"]
+    text = msg.get("text", "").strip()
+    
+    if text:
+        # Instantly respond to Telegram with 200 OK, process everything in background thread for 0 lag!
+        threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
+        
     return jsonify({"status": "ok"})
 
 def continuous_market_scanner():
