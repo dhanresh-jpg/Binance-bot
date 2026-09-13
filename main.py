@@ -20,7 +20,12 @@ HEADERS = {
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
+
+# Daily counters & trackers
+vip_signals_today = 0
 free_signals_today = 0
+last_vip_time = 0
+last_free_time = 0
 last_reset_day = datetime.now(IST).day
 
 def log_event(message):
@@ -40,7 +45,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Full Market Scan Engine.")
+        log_event("Database Initialized with Frequency-Controlled Engine.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -68,9 +73,6 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
-# ====================================================
-# FULL MARKET SCANNER (Fetches ALL USDT Spot Pairs)
-# ====================================================
 def get_market_data():
     valid_coins = []
     try:
@@ -80,26 +82,17 @@ def get_market_data():
             data = res.json().get("data", [])
             for item in data:
                 inst = item.get("instId", "")
-                # Automatically capture all pairs ending with -USDT
                 if inst.endswith("-USDT"):
-                    symbol = inst.replace("-", "") # e.g. BTCUSDT, ETHUSDT, etc.
+                    symbol = inst.replace("-", "")
                     price = float(item.get("last", 0))
                     open_24 = float(item.get("open24h", 0))
                     change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
                     low = float(item.get("low24h", 0))
-                    
                     if price > 0:
-                        valid_coins.append({
-                            "symbol": symbol,
-                            "price": price,
-                            "change": change,
-                            "low": low
-                        })
-            if valid_coins:
-                log_event(f"🌐 Full Market Scan: Fetched {len(valid_coins)} USDT pairs from OKX.")
-                return valid_coins
+                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+            if valid_coins: return valid_coins
     except Exception as e:
-        log_event(f"OKX Full Market Fetch Failed: {e}")
+        log_event(f"OKX Fetch Failed: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -107,10 +100,8 @@ def generate_24h_result_report():
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-        
         cursor.execute("SELECT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
         records = cursor.fetchall()
-        
         if not records:
             conn.close()
             return
@@ -139,31 +130,39 @@ def generate_24h_result_report():
             f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
         )
 
-        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg, is_channel=True)
-        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg, is_channel=True)
+        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
+        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
         log_event(f"📊 24-Hour Results Published! Win Rate: {win_rate}%")
         conn.close()
-
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
 
 def scan_and_dispatch(force_mode=False):
-    global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Full Market Scan (Force Mode: {force_mode})...")
+    global vip_signals_today, free_signals_today, last_vip_time, last_free_time, last_reset_day
+    log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
+        vip_signals_today = 0
         free_signals_today = 0
         last_reset_day = current_day
         cleanup_3day_old_data()
         generate_24h_result_report()
+
+    now_time = time.time()
+
+    # Frequency Check: VIP targets 12-36/day (approx min 40 min gap unless forced)
+    # Free targets 6-12/day (approx min 2-3 hours gap unless forced)
+    if not force_mode:
+        if vip_signals_today >= 24 and (now_time - last_vip_time < 3600):
+            log_event("⏳ VIP daily frequency met for current cycle window. Waiting...")
+            return
 
     coins = get_market_data()
     if not coins:
         log_event("❌ APIs unavailable. Retrying next cycle.")
         return
 
-    # Fetch last signal timestamp for each coin from database
     last_signals = {}
     try:
         conn = sqlite3.connect("vip_members.db")
@@ -174,17 +173,12 @@ def scan_and_dispatch(force_mode=False):
     except Exception as e:
         log_event(f"History Fetch Error: {e}")
 
-    now_time = time.time()
-
-    # Assign rotation metrics to all scanned coins
     for c in coins:
         c["last_signal"] = last_signals.get(c["symbol"], 0)
 
     def rotation_sort(c):
         lt = c["last_signal"]
-        # Prioritize coins not signaled in the last 24 hours (86400s)
         is_recent = 1 if (now_time - lt < 86400) else 0
-        # Among eligible ones, sort by oldest timestamp and highest change momentum
         return (is_recent, lt, -abs(c["change"]))
 
     coins.sort(key=rotation_sort)
@@ -213,23 +207,38 @@ def scan_and_dispatch(force_mode=False):
         "change": round(chg, 2), "low": top_coin.get("low", p * 0.95)
     }
 
-    dispatch_professional_signal(setup)
-    
-    # Save Signal History
-    try:
-        conn = sqlite3.connect("vip_members.db")
-        cursor = conn.cursor()
-        now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                       (sym, p, tp1, sl, now_time, now_str))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        log_event(f"History Save Error: {e}")
+    r_vip = False
+    r_free = False
 
-def dispatch_professional_signal(s):
-    global free_signals_today
+    # Dispatch to VIP (Targeting ~24 signals/day -> ~1 hr gap or based on loop execution)
+    if force_mode or (vip_signals_today < 36 and (now_time - last_vip_time >= 3600)):
+        r_vip = dispatch_vip_signal(setup)
+        if r_vip:
+            vip_signals_today += 1
+            last_vip_time = now_time
+            
+            # Save to history for VIP rotation tracking
+            try:
+                conn = sqlite3.connect("vip_members.db")
+                cursor = conn.cursor()
+                now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                               (sym, p, tp1, sl, now_time, now_str))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                log_event(f"History Save Error: {e}")
 
+    # Dispatch to Free (Targeting 6-12 signals/day -> ~2.5 to 3 hours gap)
+    if force_mode or (free_signals_today < 12 and (now_time - last_free_time >= 10800)):
+        r_free = dispatch_free_signal(setup)
+        if r_free:
+            free_signals_today += 1
+            last_free_time = now_time
+
+    log_event(f"🎯 Scan Complete #{sym} | VIP Sent ({vip_signals_today}/36): {r_vip} | Free Sent ({free_signals_today}/12): {r_free}")
+
+def dispatch_vip_signal(s):
     msg = (
         f"🚨 <b>BINANCE VIP TRADE SIGNAL</b> 🚨\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -250,38 +259,46 @@ def dispatch_professional_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
+    return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
-    r_vip = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
+def dispatch_free_signal(s):
+    msg = (
+        f"🔥 <b>REAL-TIME VIP SIGNAL PREVIEW</b> 🔥\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 <b>Pair</b>: #{s['symbol']}\n"
+        f"📊 <b>Market Type</b>: <code>{s['mode']}</code>\n"
+        f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
+        f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
+        f"🎯 <b>Target 2</b>: ${format_price(s['tp2'])}\n"
+        f"🚀 <b>Target 3 (Max)</b>: ${format_price(s['tp3'])}\n"
+        f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>24h Change</b>: {s['change']}%\n"
+        f"📊 <b>RSI Indicator</b>: {s['rsi']} (Bullish Momentum)\n"
+        f"🛡️ <b>Key Support Level</b>: ${format_price(s['low'])}\n"
+        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
+        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+    )
+    return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
-    r_free = False
-    if free_signals_today < 6:
-        free_promo = (
-            f"🔥 <b>REAL-TIME VIP SIGNAL PREVIEW</b> 🔥\n\n"
-            f"{msg}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-            f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
-        )
-        r_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
-        if r_free: free_signals_today += 1
-
-    log_event(f"🎯 Broadcasted #{s['symbol']} @ ${format_price(s['price'])} | VIP: {r_vip} | Free: {r_free}")
-
-def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
+def send_telegram_msg(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if reply_markup: payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=5.0)
         return res.json().get("ok", False)
     except Exception: return False
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Full Market USDT Scan...")
+    log_event("🚀 Engine Active with Exact Daily Frequency Rules...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(180)
+        time.sleep(1800) # Checks every 30 minutes to maintain proper hourly gaps
 
 @app.route('/')
 def home(): return jsonify({"status": "active"})
@@ -303,4 +320,3 @@ threading.Thread(target=continuous_market_scanner, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
