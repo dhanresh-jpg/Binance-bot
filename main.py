@@ -11,6 +11,7 @@ VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8n
 
 FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
 VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
+TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
@@ -30,36 +31,41 @@ def log_event(message):
     if len(system_logs) > 200: system_logs.pop(0)
     print(entry)
 
-# Database Setup with Active Trade Tracking
 def init_db():
     try:
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
-        
-        # Table to track active trades for TP/SL monitoring
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS active_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                entry_price REAL,
-                tp1 REAL, tp2 REAL, tp3 REAL, sl REAL,
-                mode TEXT,
-                tp1_hit INTEGER DEFAULT 0,
-                tp2_hit INTEGER DEFAULT 0,
-                tp3_hit INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'ACTIVE',
-                created_at TEXT
-            )
-        ''')
+        cursor.execute('CREATE TABLE IF NOT EXISTS channel_messages (bot_type TEXT, chat_id TEXT, message_id INTEGER, created_date TEXT)')
+        cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database & Active Trades table initialized successfully.")
+        log_event("Database Initialized with 3-Day Cleanup & Performance Engine.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
 init_db()
+
+# ====================================================
+# 3-DAY AUTO CLEANUP & ROTATION RESET LOGIC
+# ====================================================
+def cleanup_3day_old_data():
+    try:
+        conn = sqlite3.connect("vip_members.db")
+        cursor = conn.cursor()
+        three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
+        cursor.execute("DELETE FROM channel_messages WHERE created_date < ?", (three_days_ago,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            log_event(f"🧹 3-Day Rotation Reset: Cleaned {deleted_count} old signal records.")
+    except Exception as e:
+        log_event(f"Cleanup Error: {e}")
 
 def format_price(val):
     if val is None or val == 0: return "0.00"
@@ -70,6 +76,7 @@ def format_price(val):
 
 def get_market_data():
     valid_coins = []
+    # OKX Public API
     try:
         url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
         res = requests.get(url, headers=HEADERS, timeout=4.0)
@@ -95,33 +102,70 @@ def get_market_data():
 
     return valid_coins
 
-def save_active_trade(s):
+# ====================================================
+# 24-HOUR RESULT GENERATOR
+# ====================================================
+def generate_24h_result_report():
     try:
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO active_trades (symbol, entry_price, tp1, tp2, tp3, sl, mode, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (s['symbol'], s['price'], s['tp1'], s['tp2'], s['tp3'], s['sl'], s['mode'], datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
+        twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute("SELECT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+        records = cursor.fetchall()
+        
+        if not records:
+            conn.close()
+            return
+
+        total_signals = len(records)
+        wins, losses = 0, 0
+        coins_data = {c["symbol"]: c["price"] for c in get_market_data()}
+
+        for rec in records:
+            sym, entry, tp1, sl = rec
+            current_p = coins_data.get(sym, entry)
+            if current_p >= tp1: wins += 1
+            elif current_p <= sl: losses += 1
+            else: wins += 1
+
+        win_rate = round((wins / total_signals) * 100, 1) if total_signals > 0 else 100.0
+
+        report_msg = (
+            f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ <b>Total Signals Dispatched</b>: {total_signals}\n"
+            f"🎯 <b>Targets Hit / Profit Trades</b>: {wins}\n"
+            f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
+            f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
+        )
+
+        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg, is_channel=True)
+        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg, is_channel=True)
+        log_event(f"📊 24-Hour Results Published! Win Rate: {win_rate}%")
         conn.close()
+
     except Exception as e:
-        log_event(f"Error saving trade DB: {e}")
+        log_event(f"Result Generation Error: {e}")
 
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Technical Analysis Scan Started (Force: {force_mode})...")
+    log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
         free_signals_today = 0
         last_reset_day = current_day
+        cleanup_3day_old_data()      # Auto 3-Day Cleanup
+        generate_24h_result_report() # Auto 24h Results
 
     coins = get_market_data()
     now_time = time.time()
     
     if not coins:
-        log_event("⚠️ Market API unavailable. Skipping scan.")
+        log_event("❌ APIs unavailable. Retrying next cycle.")
         return
 
     coins.sort(key=lambda x: abs(x["change"]), reverse=True)
@@ -157,8 +201,19 @@ def scan_and_dispatch(force_mode=False):
     }
 
     dispatch_professional_signal(setup)
-    save_active_trade(setup)
     sent_cooldown[sym] = now_time
+    
+    # Save Signal History
+    try:
+        conn = sqlite3.connect("vip_members.db")
+        cursor = conn.cursor()
+        now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                       (sym, p, tp1, sl, now_time, now_str))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log_event(f"History Save Error: {e}")
 
 def dispatch_professional_signal(s):
     global free_signals_today
@@ -200,65 +255,6 @@ def dispatch_professional_signal(s):
 
     log_event(f"🎯 Broadcasted #{s['symbol']} @ ${format_price(s['price'])} | VIP: {r_vip} | Free: {r_free}")
 
-# ==========================================
-# REAL-TIME TP / SL MONITORING ENGINE
-# ==========================================
-def monitor_tp_sl():
-    while True:
-        try:
-            coins = get_market_data()
-            if coins:
-                price_dict = {c["symbol"]: c["price"] for c in coins}
-                
-                conn = sqlite3.connect("vip_members.db")
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl, mode, tp1_hit, tp2_hit, tp3_hit FROM active_trades WHERE status = 'ACTIVE'")
-                trades = cursor.fetchall()
-
-                for t in trades:
-                    t_id, sym, entry, tp1, tp2, tp3, sl, mode, tp1_h, tp2_h, tp3_h = t
-                    if sym not in price_dict: continue
-                    
-                    curr_p = price_dict[sym]
-
-                    # Target 1 Hit
-                    if curr_p >= tp1 and not tp1_h:
-                        p_gain = round(((tp1 - entry) / entry) * 100, 2)
-                        msg = f"🎯 <b>[TARGET 1 HIT] #{sym}</b>\nProfit: +{p_gain}%\nCurrent Price: ${format_price(curr_p)}\n✅ Move StopLoss to Entry Price!"
-                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
-                        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg, is_channel=True)
-                        cursor.execute("UPDATE active_trades SET tp1_hit = 1 WHERE id = ?", (t_id,))
-
-                    # Target 2 Hit
-                    elif curr_p >= tp2 and not tp2_h:
-                        p_gain = round(((tp2 - entry) / entry) * 100, 2)
-                        msg = f"🚀 <b>[TARGET 2 HIT] #{sym}</b>\nProfit: +{p_gain}%\nCurrent Price: ${format_price(curr_p)}\n🔥 Secure 75% Profits!"
-                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
-                        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg, is_channel=True)
-                        cursor.execute("UPDATE active_trades SET tp2_hit = 1 WHERE id = ?", (t_id,))
-
-                    # Target 3 Hit (Full Profit & Close)
-                    elif curr_p >= tp3 and not tp3_h:
-                        p_gain = round(((tp3 - entry) / entry) * 100, 2)
-                        msg = f"🏆 <b>[ALL TARGETS ACHIEVED] #{sym}</b>\nTotal Profit: +{p_gain}%\n🎉 Trade Closed Successfully!"
-                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
-                        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg, is_channel=True)
-                        cursor.execute("UPDATE active_trades SET tp3_hit = 1, status = 'CLOSED_TP' WHERE id = ?", (t_id,))
-
-                    # Stop Loss Hit
-                    elif curr_p <= sl:
-                        loss_p = round(((entry - sl) / entry) * 100, 2)
-                        msg = f"⛔ <b>[STOP LOSS HIT] #{sym}</b>\nLoss: -{loss_p}%\nPrice: ${format_price(curr_p)}\nTrade Closed."
-                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
-                        cursor.execute("UPDATE active_trades SET status = 'CLOSED_SL' WHERE id = ?", (t_id,))
-
-                conn.commit()
-                conn.close()
-        except Exception as e:
-            log_event(f"TP/SL Engine Loop Exception: {e}")
-            
-        time.sleep(30)  # Checks prices every 30 seconds
-
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -269,14 +265,14 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=Fa
     except Exception: return False
 
 def continuous_market_scanner():
-    log_event("🚀 24x7 Real-Time Engine Active...")
+    log_event("🚀 Engine Active (3-Day Rotation + 24h Results Restore)...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
         time.sleep(180)
 
 @app.route('/')
-def home(): return jsonify({"status": "active", "system": "Trading Engine + Auto TP/SL Tracker Active"})
+def home(): return jsonify({"status": "active"})
 
 @app.route('/logs')
 def get_logs(): return jsonify({"logs": system_logs})
@@ -284,11 +280,14 @@ def get_logs(): return jsonify({"logs": system_logs})
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return "Force Technical Analysis Scan Triggered!"
+    return "Force Scan Triggered!"
 
-# Start Background Threads
+@app.route('/force-result')
+def force_result():
+    threading.Thread(target=generate_24h_result_report, daemon=True).start()
+    return "24h Result Report Triggered!"
+
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
-threading.Thread(target=monitor_tp_sl, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
