@@ -10,7 +10,7 @@ from flask import Flask, jsonify
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EHXXetb2qrW-fGeZCvU")
+FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
 
 FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
@@ -229,10 +229,10 @@ def analyze_market_setup(symbol):
     ema20 = calculate_ema(closes, 20)
     recent_high = np.max(highs[-8:-1])
 
-    score = 0
+    score = 10 
     if live_price >= recent_high * 0.98: score += 40
     if live_price >= ema20: score += 30
-    if 35 <= rsi <= 80: score += 30
+    if 38 <= rsi <= 80: score += 20
 
     atr = np.mean(highs[-10:] - lows[-10:])
     setup = {
@@ -250,7 +250,7 @@ def analyze_market_setup(symbol):
 # ==========================================
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Guaranteed Market Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Real-Time Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
@@ -260,27 +260,39 @@ def scan_and_dispatch(force_mode=False):
     watchlist = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
         "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT",
-        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT"
+        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT",
+        "OPUSDT", "ARBUSDT", "INJUSDT", "TIAUSDT", "NEARUSDT"
     ]
 
     now_time = time.time()
-    candidates = []
+    all_evaluated = []
 
     for sym in watchlist:
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 1800:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 3600:
             continue
 
         setup, score = analyze_market_setup(sym)
         if setup:
-            candidates.append(setup)
+            all_evaluated.append(setup)
 
-    if candidates:
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        best_candidate = candidates[0]
-        dispatch_single_signal(best_candidate)
-        sent_cooldown[best_candidate["symbol"]] = now_time
-    else:
-        log_event("Scan completed: Data fetch issue on all symbols.")
+    all_evaluated.sort(key=lambda x: x["score"], reverse=True)
+
+    sent_count = 0
+    if all_evaluated:
+        target_setups = []
+        if force_mode:
+            target_setups = all_evaluated[:1] # Always send top coin on force scan
+        else:
+            target_setups = [s for s in all_evaluated if s["score"] >= 40][:1]
+
+        for setup in target_setups:
+            dispatch_single_signal(setup)
+            sent_cooldown[setup["symbol"]] = now_time
+            sent_count += 1
+            time.sleep(2)
+
+    if sent_count == 0:
+        log_event("Scan completed: Waiting for market condition match.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -347,7 +359,7 @@ def dispatch_single_signal(setup):
         if r_free:
             free_signals_today += 1
 
-    log_event(f"🎯 Signal Dispatched for #{sym} | VIP: {r_vip} | Free (Count {free_signals_today}/6): {r_free}")
+    log_event(f"🎯 Live Breakout Signal Dispatched for #{sym} | VIP: {r_vip} | Free Count ({free_signals_today}/6): {r_free}")
 
 # ==========================================
 # 6. TELEGRAM API & USER BOT HANDLERS
@@ -455,7 +467,7 @@ def process_bot_updates():
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "Guaranteed Dispatch Engine Running"})
+    return jsonify({"status": "active", "system": "Real-Time Scoring TA Engine Running"})
 
 @app.route('/logs')
 def get_logs():
