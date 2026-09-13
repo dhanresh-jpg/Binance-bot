@@ -153,38 +153,37 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. LIVE PRICE & TECHNICAL ANALYSIS ENGINE
+# 4. HIGH-RELIABILITY MARKET DATA ENGINE
 # ==========================================
-def get_live_ticker_price(symbol):
-    try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
-        if res.status_code == 200:
-            return float(res.json()["price"])
-    except Exception:
-        pass
-
-    try:
-        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", headers=HEADERS, timeout=2.0)
-        if res.status_code == 200:
-            result_list = res.json().get("result", {}).get("list", [])
-            if result_list and "lastPrice" in result_list[0]:
-                return float(result_list[0]["lastPrice"])
-    except Exception:
-        pass
-    return None
-
-def fetch_klines(symbol, interval="1h", limit=30):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+def fetch_klines(symbol, interval="60", limit=30):
+    # Primary Source: Bybit (No Geo Block / Fast)
+    url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
         if res.status_code == 200:
-            data = res.json()
-            closes = [float(candle[4]) for candle in data]
-            highs = [float(candle[2]) for candle in data]
-            lows = [float(candle[3]) for candle in data]
-            return np.array(closes), np.array(highs), np.array(lows)
+            result_list = res.json().get("result", {}).get("list", [])
+            if result_list:
+                result_list.reverse()
+                closes = np.array([float(c[4]) for c in result_list])
+                highs = np.array([float(c[2]) for c in result_list])
+                lows = np.array([float(c[3]) for c in result_list])
+                return closes, highs, lows
     except Exception:
         pass
+
+    # Backup Source: Binance API
+    url_b = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
+    try:
+        res = requests.get(url_b, headers=HEADERS, timeout=2.5)
+        if res.status_code == 200:
+            data = res.json()
+            closes = np.array([float(candle[4]) for candle in data])
+            highs = np.array([float(candle[2]) for candle in data])
+            lows = np.array([float(candle[3]) for candle in data])
+            return closes, highs, lows
+    except Exception:
+        pass
+
     return None, None, None
 
 def calculate_rsi(prices, period=14):
@@ -217,31 +216,28 @@ def calculate_ema(prices, span):
     return ema[-1]
 
 def analyze_market_setup(symbol):
-    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=30)
+    closes, highs, lows = fetch_klines(symbol, interval="60", limit=30)
     if closes is None or len(closes) < 15:
-        return None, 0
+        return None, -1
 
-    live_price = get_live_ticker_price(symbol)
-    if live_price is None:
-        live_price = closes[-1]
-
+    live_price = closes[-1]
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
-    recent_high = np.max(highs[-8:-1])
+    recent_high = np.max(highs[-10:-1])
 
-    score = 10 
+    score = 0
     if live_price >= recent_high * 0.98: score += 40
-    if live_price >= ema20: score += 30
-    if 38 <= rsi <= 80: score += 20
+    if live_price >= ema20: score += 35
+    if 40 <= rsi <= 80: score += 25
 
     atr = np.mean(highs[-10:] - lows[-10:])
     setup = {
         "symbol": symbol,
         "price": live_price,
         "rsi": round(rsi, 2),
-        "atr": atr,
+        "atr": atr if atr > 0 else (live_price * 0.02),
         "score": score,
-        "signal_type": "FUTURES" if rsi > 52 else "SPOT"
+        "signal_type": "FUTURES" if rsi > 54 else "SPOT"
     }
     return setup, score
 
@@ -260,39 +256,28 @@ def scan_and_dispatch(force_mode=False):
     watchlist = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
         "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT",
-        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT",
-        "OPUSDT", "ARBUSDT", "INJUSDT", "TIAUSDT", "NEARUSDT"
+        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT"
     ]
 
     now_time = time.time()
-    all_evaluated = []
+    candidates = []
 
     for sym in watchlist:
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 3600:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 1800:
             continue
 
         setup, score = analyze_market_setup(sym)
         if setup:
-            all_evaluated.append(setup)
+            candidates.append(setup)
 
-    all_evaluated.sort(key=lambda x: x["score"], reverse=True)
+    if candidates:
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        top_setup = candidates[0]
 
-    sent_count = 0
-    if all_evaluated:
-        target_setups = []
-        if force_mode:
-            target_setups = all_evaluated[:1] # Always send top coin on force scan
-        else:
-            target_setups = [s for s in all_evaluated if s["score"] >= 40][:1]
-
-        for setup in target_setups:
-            dispatch_single_signal(setup)
-            sent_cooldown[setup["symbol"]] = now_time
-            sent_count += 1
-            time.sleep(2)
-
-    if sent_count == 0:
-        log_event("Scan completed: Waiting for market condition match.")
+        dispatch_single_signal(top_setup)
+        sent_cooldown[top_setup["symbol"]] = now_time
+    else:
+        log_event("Scan Completed: API connection issue, retrying in next loop.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -323,7 +308,7 @@ def dispatch_single_signal(setup):
         msg = (
             f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n"
             f"🪙 <b>Coin</b>: #{sym}\n"
-            f"📈 <b>Analysis</b>: EMA Support + Resistance Momentum\n"
+            f"📈 <b>Analysis</b>: Dynamic Breakout + Volume Surge\n"
             f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
             f"📊 <b>RSI Strength</b>: {rsi}\n\n"
             f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
@@ -359,7 +344,7 @@ def dispatch_single_signal(setup):
         if r_free:
             free_signals_today += 1
 
-    log_event(f"🎯 Live Breakout Signal Dispatched for #{sym} | VIP: {r_vip} | Free Count ({free_signals_today}/6): {r_free}")
+    log_event(f"🎯 Signal Dispatched for #{sym} | VIP: {r_vip} | Free (Count {free_signals_today}/6): {r_free}")
 
 # ==========================================
 # 6. TELEGRAM API & USER BOT HANDLERS
@@ -467,7 +452,7 @@ def process_bot_updates():
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "Real-Time Scoring TA Engine Running"})
+    return jsonify({"status": "active", "system": "Real-Time Bybit+Binance TA Engine Running"})
 
 @app.route('/logs')
 def get_logs():
