@@ -30,7 +30,7 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-# Tracking counters for daily limits
+# Tracking counters and timestamps for frequency control
 free_signals_today = 0
 vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
@@ -99,7 +99,6 @@ def get_market_data():
                     low = float(item.get("low24h", 0))
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
-            log_event(f"Fetched {len(valid_coins)} coins successfully from OKX.")
             if valid_coins: return valid_coins
         else:
             log_event(f"OKX API Error Status Code: {res.status_code}")
@@ -112,29 +111,54 @@ def generate_24h_result_report():
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("SELECT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+        
+        # DISTINCT symbols/signals uthao taaki duplicate signals count na ho
+        cursor.execute("SELECT DISTINCT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
         records = cursor.fetchall()
         if not records:
             conn.close()
+            log_event("📊 24-Hour Results: No signals found for the last 24 hours.")
             return
 
-        total_signals = len(records)
-        wins, losses = 0, 0
-        coins_data = {c["symbol"]: c["price"] for c in get_market_data()}
+        live_coins = get_market_data()
+        current_prices = {c["symbol"]: c["price"] for c in live_coins}
+
+        total_signals = 0
+        wins = 0
+        losses = 0
 
         for rec in records:
             sym, entry, tp1, sl = rec
-            current_p = coins_data.get(sym, entry)
-            if current_p >= tp1: wins += 1
-            elif current_p <= sl: losses += 1
-            else: wins += 1
+            current_p = current_prices.get(sym)
+            
+            if not current_p:
+                continue
+                
+            total_signals += 1
+            
+            if tp1 > entry:  # Long / Spot Buy
+                if current_p >= tp1: wins += 1
+                elif current_p <= sl: losses += 1
+                else:
+                    if current_p > entry: wins += 1
+                    else: losses += 1
+            else:  # Short
+                if current_p <= tp1: wins += 1
+                elif current_p >= sl: losses += 1
+                else:
+                    if current_p < entry: wins += 1
+                    else: losses += 1
 
-        win_rate = round((wins / total_signals) * 100, 1) if total_signals > 0 else 100.0
+        if total_signals == 0:
+            conn.close()
+            return
+
+        win_rate = round((wins / total_signals) * 100, 1)
 
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ <b>Total Signals Dispatched</b>: {total_signals}\n"
+            f"✅ <b>Total Unique Signals</b>: {total_signals}\n"
             f"🎯 <b>Targets Hit / Profit Trades</b>: {wins}\n"
             f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
             f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
@@ -144,7 +168,7 @@ def generate_24h_result_report():
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        log_event(f"📊 24-Hour Results Published! Win Rate: {win_rate}%")
+        log_event(f"📊 Real 24-Hour Results Published! Total: {total_signals}, Win Rate: {win_rate}%")
         conn.close()
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
@@ -156,7 +180,6 @@ def scan_and_dispatch(force_mode=False):
     current_time = time.time()
     current_day = datetime.now(IST).day
 
-    # Reset counters on new day
     if current_day != last_reset_day:
         vip_signals_today = 0
         free_signals_today = 0
@@ -169,7 +192,6 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    # Pick a rotating or unique coin to avoid repetition based on current count
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
     selected_coin = coins[coin_index]
     
@@ -200,8 +222,6 @@ def scan_and_dispatch(force_mode=False):
         "change": round(chg, 2), "low": selected_coin.get("low", p * 0.95)
     }
 
-    # VIP Channel: Target 12 to 36 signals per day (Interval ~ 40 mins to 2 hours)
-    # Free Channel: Target exactly 6 signals per day (Interval ~ 4 hours)
     should_send_vip = False
     should_send_free = False
 
@@ -209,11 +229,11 @@ def scan_and_dispatch(force_mode=False):
         should_send_vip = True
         should_send_free = True
     else:
-        # VIP check: at least 40 minutes gap and under 36 daily limit
+        # VIP: 12 to 36 signals per day (~40 mins gap)
         if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
             should_send_vip = True
 
-        # Free check: at least 4 hours gap (14400 seconds) and under 6 daily limit
+        # Free: Exactly 6 signals per day (~4 hours gap = 14400 seconds)
         if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
             should_send_free = True
 
@@ -229,7 +249,6 @@ def scan_and_dispatch(force_mode=False):
         last_free_dispatch_time = current_time
         log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
-    # Save to history if any channel got the signal
     if should_send_vip or should_send_free:
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
@@ -305,8 +324,6 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
         data = res.json()
         if not data.get("ok", False):
             log_event(f"❌ Telegram Send FAILED for {chat_id}: Code {res.status_code} - {data.get('description')}")
-        else:
-            log_event(f"✅ Telegram Message Sent Successfully to {chat_id}")
         return data.get("ok", False)
     except Exception as e:
         log_event(f"🚨 Telegram Send Exception: {e}")
@@ -495,7 +512,8 @@ def telegram_webhook():
     chat_id = msg["chat"]["id"]
     text = msg.get("text", "").strip()
     
-    log_event(f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}")
+    log_email_or_text = f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}"
+    log_event(log_email_or_text)
     if text:
         threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         
@@ -506,7 +524,7 @@ def continuous_market_scanner():
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(600)  # Check every 10 minutes to manage frequencies accurately
+        time.sleep(600)
 
 @app.route('/')
 def home(): return jsonify({"status": "active"})
