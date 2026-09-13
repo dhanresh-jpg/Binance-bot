@@ -265,9 +265,8 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     
-    # Channels (negative IDs) do not support standard reply keyboards
     if str(chat_id).startswith("-"):
-        pass  # No keyboard for channels
+        pass  # Channels don't use standard keyboards
     elif reply_markup:
         payload["reply_markup"] = reply_markup
     else:
@@ -357,6 +356,7 @@ def membership_expiry_checker():
 
 def process_message_async(chat_id, text):
     try:
+        log_event(f"📩 Processing message from {chat_id}: {text}")
         if text.startswith("/start"):
             welcome_text = (
                 "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\n"
@@ -465,6 +465,7 @@ def telegram_webhook():
     chat_id = msg["chat"]["id"]
     text = msg.get("text", "").strip()
     
+    log_event(f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}")
     if text:
         threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         
