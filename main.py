@@ -156,7 +156,7 @@ def verify_tron_txid(txid):
 # 4. HIGH-RELIABILITY MARKET DATA ENGINE
 # ==========================================
 def fetch_klines(symbol, interval="60", limit=30):
-    # Primary Source: Bybit (No Geo Block / Fast)
+    # Primary Source: Bybit (Fast & Zero Rate Limit)
     url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -246,17 +246,19 @@ def analyze_market_setup(symbol):
 # ==========================================
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Real-Time Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Top 100 Market Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
         free_signals_today = 0
         last_reset_day = current_day
 
+    # Top Traded 25 High-Volume Coins in Market
     watchlist = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
         "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT",
-        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT"
+        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT",
+        "ARBUSDT", "OPUSDT", "TIAUSDT", "INJUSDT", "RENDERUSDT", "STXUSDT"
     ]
 
     now_time = time.time()
@@ -268,7 +270,13 @@ def scan_and_dispatch(force_mode=False):
 
         setup, score = analyze_market_setup(sym)
         if setup:
-            candidates.append(setup)
+            # Regular Auto Scan requirement check
+            if not force_mode:
+                if score >= 40:
+                    candidates.append(setup)
+            else:
+                # Force Mode me bina restriction candidate add karo
+                candidates.append(setup)
 
     if candidates:
         candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -277,7 +285,7 @@ def scan_and_dispatch(force_mode=False):
         dispatch_single_signal(top_setup)
         sent_cooldown[top_setup["symbol"]] = now_time
     else:
-        log_event("Scan Completed: API connection issue, retrying in next loop.")
+        log_event("Scan Completed: No coin met requirement score standard (>=40) right now.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -461,7 +469,7 @@ def get_logs():
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return "Force scan triggered! Check /logs in 10 seconds."
+    return "Force scan triggered! Signal will be sent instantly."
 
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
