@@ -21,13 +21,14 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 
-# Reply Keyboard Layout (4 Buttons)
+# Permanent Reply Keyboard Layout (4 Buttons)
 KEYBOARD_LAYOUT = {
     "keyboard": [
         [{"text": "💎 View VIP Plans"}, {"text": "💳 Get Payment Address"}],
         [{"text": "🔍 Verify Payment"}, {"text": "✅ How to Verify TXID"}]
     ],
-    "resize_keyboard": True
+    "resize_keyboard": True,
+    "is_persistent": True
 }
 
 # Daily counters & trackers
@@ -46,7 +47,7 @@ def log_event(message):
 
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db")
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
@@ -54,7 +55,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized Successfully with Auto-Expiry & Kick support.")
+        log_event("Database Initialized Successfully.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -62,7 +63,7 @@ init_db()
 
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db")
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
@@ -71,7 +72,7 @@ def cleanup_3day_old_data():
         conn.commit()
         conn.close()
         if deleted_count > 0:
-            log_event(f"🧹 3-Day Rotation Reset: Cleaned {deleted_count} old records.")
+            log_event(f"🧹 Cleaned {deleted_count} old records.")
     except Exception as e:
         log_event(f"Cleanup Error: {e}")
 
@@ -106,7 +107,7 @@ def get_market_data():
 
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db")
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("SELECT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
@@ -164,7 +165,7 @@ def scan_and_dispatch(force_mode=False):
 
     last_signals = {}
     try:
-        conn = sqlite3.connect("vip_members.db")
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         cursor.execute("SELECT symbol, MAX(timestamp) FROM signal_history GROUP BY symbol")
         last_signals = {row[0]: row[1] for row in cursor.fetchall()}
@@ -218,7 +219,7 @@ def scan_and_dispatch(force_mode=False):
             vip_signals_today += 1
             last_vip_time = now_time
             try:
-                conn = sqlite3.connect("vip_members.db")
+                conn = sqlite3.connect("vip_members.db", timeout=10.0)
                 cursor = conn.cursor()
                 now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
                 cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
@@ -281,7 +282,7 @@ def dispatch_free_signal(s):
     )
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
-def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
+def send_telegram_msg(bot_token, chat_id, text, reply_markup=KEYBOARD_LAYOUT):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if reply_markup: payload["reply_markup"] = reply_markup
@@ -295,9 +296,7 @@ def kick_telegram_user(chat_id, user_id):
     payload = {"chat_id": chat_id, "user_id": user_id, "revoke_messages": False}
     try:
         res = requests.post(url, json=payload, timeout=5.0)
-        # Unban immediately so they can rejoin later using a valid link if they renew
-        unban_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/unbanChatMember"
-        requests.post(url, json={"chat_id": chat_id, "user_id": user_id}, timeout=5.0)
+        requests.post(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/unbanChatMember", json={"chat_id": chat_id, "user_id": user_id}, timeout=5.0)
         return res.json().get("ok", False)
     except Exception:
         return False
@@ -307,11 +306,11 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "API Error or Invalid TXID."
+            return False, 0, "API Error or Invalid TXID format."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
-            return False, 0, "Transaction is failed or not found on blockchain."
+            return False, 0, "Transaction failed or not found on blockchain."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
         if not trc20_transfers:
@@ -334,42 +333,36 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         if valid_transfer:
             return True, final_amount, "Verification Successful!"
         else:
-            return False, 0, "Recipient address or payment amount doesn't match."
+            return False, 0, "Recipient address or payment amount does not match."
     except Exception as e:
         return False, 0, f"Verification error: {e}"
 
-# Background Expiry & Auto-Kick Loop
 def membership_expiry_checker():
-    log_event("⏳ Membership Expiry & Auto-Kick Worker Started...")
+    log_event("⏳ Expiry & Auto-Kick Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db")
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
-            # Find all members whose subscription has expired
             cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
             expired_users = cursor.fetchall()
             
             for row in expired_users:
                 u_id = row[0]
-                # Kick from VIP Channel
                 success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
                 if success:
-                    log_event(f"👢 Auto-Kicked expired user ID: {u_id} from VIP Channel.")
-                    # Notify user
-                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu to regain access.")
+                    log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
+                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the menu.")
                 
-                # Update status in db
                 cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
                 conn.commit()
                 
             conn.close()
         except Exception as e:
             log_event(f"Expiry Checker Error: {e}")
-        time.sleep(3600) # Check every 1 hour
+        time.sleep(3600)
 
-# Telegram Webhook Handler with Substring Matching & Expiry Tracking
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
@@ -385,7 +378,7 @@ def telegram_webhook():
             "Get high-accuracy crypto signals with multi-TP targets and automated VIP access.\n"
             "Use the menu buttons below to navigate:"
         )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text, reply_markup=KEYBOARD_LAYOUT)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text)
         
     elif "View VIP Plans" in text:
         plan_text = (
@@ -396,7 +389,7 @@ def telegram_webhook():
             "• <b>30 Days VIP</b>: $28 USDT\n\n"
             "<i>Click 'Get Payment Address' to proceed with payment.</i>"
         )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text, reply_markup=KEYBOARD_LAYOUT)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text)
         
     elif "Get Payment Address" in text:
         pay_text = (
@@ -405,7 +398,7 @@ def telegram_webhook():
             f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
             "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
         )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text, reply_markup=KEYBOARD_LAYOUT)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text)
         
     elif "Verify Payment" in text:
         verify_text = (
@@ -414,7 +407,7 @@ def telegram_webhook():
             "Please send your <b>Transaction ID (TXID)</b> right here in the chat.\n\n"
             "Our automated system will instantly verify your TRC20 transfer and activate your VIP access!"
         )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text, reply_markup=KEYBOARD_LAYOUT)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text)
         
     elif "How to Verify TXID" in text:
         guide_text = (
@@ -424,61 +417,64 @@ def telegram_webhook():
             "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
             "3. Send your TXID here in chat for automatic verification and VIP activation."
         )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text, reply_markup=KEYBOARD_LAYOUT)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
         
     else:
-        if len(text) >= 40:  # Likely a TXID hash submission
+        # Check if text looks like a TXID Hash (usually around 64 characters)
+        if len(text) >= 40:
             txid = text.strip()
-            conn = sqlite3.connect("vip_members.db")
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
-            if cursor.fetchone():
-                conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!", reply_markup=KEYBOARD_LAYOUT)
-                return jsonify({"status": "ok"})
+            try:
+                conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
+                if cursor.fetchone():
+                    conn.close()
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!")
+                    return jsonify({"status": "ok"})
+                    
+                is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
                 
-            is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
-            
-            if is_valid:
-                # Calculate days based on amount sent
-                if paid_amount >= 27.0:
-                    days = 30
-                    plan_name = "30 Days VIP"
-                elif paid_amount >= 18.0:
-                    days = 20
-                    plan_name = "20 Days VIP"
+                if is_valid:
+                    if paid_amount >= 27.0:
+                        days = 30
+                        plan_name = "30 Days VIP"
+                    elif paid_amount >= 18.0:
+                        days = 20
+                        plan_name = "20 Days VIP"
+                    else:
+                        days = 10
+                        plan_name = "10 Days VIP"
+                    
+                    expiry_dt = datetime.now(IST) + timedelta(days=days)
+                    expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
+                    cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
+                    conn.commit()
+                    conn.close()
+                    
+                    success_msg = (
+                        "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
+                        f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
+                        "🎉 <b>VIP Channel Invite Link:</b>\nhttps://t.me/+YourVIPChannelInviteLink"
+                    )
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
                 else:
-                    days = 10
-                    plan_name = "10 Days VIP"
-                
-                expiry_dt = datetime.now(IST) + timedelta(days=days)
-                expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
-                
-                # Save TXID and Member Expiry
-                cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
-                cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
-                conn.commit()
-                conn.close()
-                
-                success_msg = (
-                    "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
-                    "━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
-                    f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
-                    "🎉 <b>VIP Channel Invite Link:</b>\nhttps://t.me/+YourVIPChannelInviteLink"
-                )
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg, reply_markup=KEYBOARD_LAYOUT)
-            else:
-                conn.close()
-                fail_msg = f"❌ <b>Verification Failed:</b> {reason}"
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg, reply_markup=KEYBOARD_LAYOUT)
+                    conn.close()
+                    fail_msg = f"❌ <b>Verification Failed:</b> {reason}\n\n<i>Please make sure you sent the correct TRC20 USDT transaction to our wallet address.</i>"
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
+            except Exception as e:
+                log_event(f"Webhook TXID Processing Error: {e}")
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "❌ An error occurred during verification. Please try again.")
         else:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Please use the menu buttons below:", reply_markup=KEYBOARD_LAYOUT)
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Please use the menu buttons below or send your valid transaction TXID:")
 
     return jsonify({"status": "ok"})
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Complete Automation & Expiry Management...")
+    log_event("🚀 Engine Active...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
@@ -500,7 +496,6 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return "24h Result Report Triggered!"
 
-# Start background threads
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
