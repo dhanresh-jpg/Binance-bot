@@ -156,7 +156,7 @@ def verify_tron_txid(txid):
 # 4. HIGH-RELIABILITY MARKET DATA ENGINE
 # ==========================================
 def fetch_klines(symbol, interval="60", limit=30):
-    # Primary Source: Bybit (Fast & Zero Rate Limit)
+    # Primary Source: Bybit Public Kline V5
     url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -171,7 +171,7 @@ def fetch_klines(symbol, interval="60", limit=30):
     except Exception:
         pass
 
-    # Backup Source: Binance API
+    # Secondary Source: Binance Public Klines
     url_b = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
     try:
         res = requests.get(url_b, headers=HEADERS, timeout=2.5)
@@ -226,9 +226,9 @@ def analyze_market_setup(symbol):
     recent_high = np.max(highs[-10:-1])
 
     score = 0
-    if live_price >= recent_high * 0.98: score += 40
+    if live_price >= recent_high * 0.97: score += 40
     if live_price >= ema20: score += 35
-    if 40 <= rsi <= 80: score += 25
+    if 35 <= rsi <= 85: score += 25
 
     atr = np.mean(highs[-10:] - lows[-10:])
     setup = {
@@ -237,7 +237,7 @@ def analyze_market_setup(symbol):
         "rsi": round(rsi, 2),
         "atr": atr if atr > 0 else (live_price * 0.02),
         "score": score,
-        "signal_type": "FUTURES" if rsi > 54 else "SPOT"
+        "signal_type": "FUTURES" if rsi > 50 else "SPOT"
     }
     return setup, score
 
@@ -246,14 +246,13 @@ def analyze_market_setup(symbol):
 # ==========================================
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Top 100 Market Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Top Market Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
         free_signals_today = 0
         last_reset_day = current_day
 
-    # Top Traded 25 High-Volume Coins in Market
     watchlist = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
         "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT",
@@ -270,13 +269,13 @@ def scan_and_dispatch(force_mode=False):
 
         setup, score = analyze_market_setup(sym)
         if setup:
-            # Regular Auto Scan requirement check
-            if not force_mode:
-                if score >= 40:
-                    candidates.append(setup)
-            else:
-                # Force Mode me bina restriction candidate add karo
+            if force_mode:
+                # Force Mode: Add every analyzed setup regardless of score
                 candidates.append(setup)
+            else:
+                # Auto Scan: Only add if requirement (Score >= 35) is met
+                if score >= 35:
+                    candidates.append(setup)
 
     if candidates:
         candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -285,7 +284,7 @@ def scan_and_dispatch(force_mode=False):
         dispatch_single_signal(top_setup)
         sent_cooldown[top_setup["symbol"]] = now_time
     else:
-        log_event("Scan Completed: No coin met requirement score standard (>=40) right now.")
+        log_event("Scan Completed: No coin met score standard (>=35) right now.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -469,7 +468,7 @@ def get_logs():
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return "Force scan triggered! Signal will be sent instantly."
+    return "Force scan triggered! Instant signal will be dispatched."
 
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
