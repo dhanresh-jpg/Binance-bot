@@ -153,7 +153,7 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. LIVE PRICE & TECHNICAL ANALYSIS ENGINE
+# 4. FAST MULTI-EXCHANGE & TA ENGINE
 # ==========================================
 def get_live_ticker_price(symbol):
     try:
@@ -217,7 +217,7 @@ def calculate_ema(prices, span):
         ema[i] = alpha * prices[i] + (1 - alpha) * ema[i-1]
     return ema[-1]
 
-def analyze_crypto_breakout(symbol, ignore_cooldown=False):
+def analyze_crypto_breakout(symbol, force_mode=False):
     closes, highs, lows = fetch_klines(symbol, interval="1h", limit=50)
     if closes is None or len(closes) < 30:
         return None
@@ -233,22 +233,65 @@ def analyze_crypto_breakout(symbol, ignore_cooldown=False):
 
     is_breakout = live_price >= recent_high * 0.995
     is_bullish = (live_price > ema20) and (ema20 > ema50)
-    is_good_rsi = (45 <= rsi <= 70)
+    is_good_rsi = (45 <= rsi <= 72)
 
-    if (is_breakout and is_bullish and is_good_rsi) or ignore_cooldown:
+    if (is_breakout and is_bullish and is_good_rsi) or force_mode:
         atr = np.mean(highs[-14:] - lows[-14:])
         return {
             "symbol": symbol,
             "price": live_price,
             "rsi": round(rsi, 2),
             "atr": atr,
-            "signal_type": "FUTURES" if rsi > 58 else "SPOT"
+            "signal_type": "FUTURES" if rsi > 55 else "SPOT"
         }
     return None
 
 # ==========================================
-# 5. DISPATCH & SCANNER LOGIC
+# 5. REAL-TIME SCANNER & DISPATCH ENGINE
 # ==========================================
+def scan_and_dispatch(force_mode=False):
+    global free_signals_today, last_reset_day
+    log_event(f"🔍 Running Market Scan (Force Mode: {force_mode})...")
+
+    watchlist = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", 
+        "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT", 
+        "ADAUSDT", "DOTUSDT", "SHIBUSDT", "LTCUSDT", "TIAUSDT", "INJUSDT"
+    ]
+
+    current_day = datetime.now(IST).day
+    if current_day != last_reset_day:
+        free_signals_today = 0
+        last_reset_day = current_day
+
+    now_time = time.time()
+    dispatched = False
+
+    for sym in watchlist:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 14400:
+            continue
+
+        signal = analyze_crypto_breakout(sym, force_mode=force_mode)
+        if signal:
+            dispatch_single_signal(signal)
+            sent_cooldown[sym] = now_time
+            dispatched = True
+            if force_mode:
+                break
+            time.sleep(2)
+
+    if not dispatched:
+        log_event("Scan completed: No strong breakout match found at this moment.")
+
+def continuous_scanner_loop():
+    log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
+    while True:
+        try:
+            scan_and_dispatch(force_mode=False)
+        except Exception as e:
+            log_event(f"Scanner Loop Error: {e}")
+        time.sleep(180)
+
 def format_price(val):
     if val is None or val == 0: return "0.00"
     if val >= 1000: return f"{val:,.2f}"
@@ -305,51 +348,7 @@ def dispatch_single_signal(setup):
         if r_free:
             free_signals_today += 1
 
-    log_event(f"🎯 Live Signal Sent for #{sym} | VIP: {r_vip} | Free Count ({free_signals_today}/6): {r_free}")
-
-def run_single_scan_pass(force_mode=False):
-    log_event(f"🔍 Running Market Scan (Force Mode: {force_mode})...")
-    watchlist = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", 
-        "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT"
-    ]
-    
-    now_time = time.time()
-    signals_sent = 0
-
-    for sym in watchlist:
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 28800:
-            continue
-
-        signal = analyze_crypto_breakout(sym, ignore_cooldown=force_mode)
-        if signal:
-            dispatch_single_signal(signal)
-            sent_cooldown[sym] = now_time
-            signals_sent += 1
-            if force_mode and signals_sent >= 1:
-                break
-        time.sleep(0.05)
-
-    if signals_sent == 0:
-        log_event("ℹ️ Scan completed: No strong breakout match found at this moment.")
-
-def continuous_market_scanner():
-    global free_signals_today, last_reset_day
-    log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
-
-    while True:
-        try:
-            current_day = datetime.now(IST).day
-            if current_day != last_reset_day:
-                free_signals_today = 0
-                last_reset_day = current_day
-
-            run_single_scan_pass(force_mode=False)
-
-        except Exception as e:
-            log_event(f"Scanner Loop Error: {e}")
-
-        time.sleep(180)
+    log_event(f"🎯 Live Signal Dispatched for #{sym} | VIP: {r_vip} | Free Count ({free_signals_today}/6): {r_free}")
 
 # ==========================================
 # 6. TELEGRAM API & USER BOT HANDLERS
@@ -452,25 +451,25 @@ def process_bot_updates():
             time.sleep(2)
 
 # ==========================================
-# 7. FLASK CONTROLLER & ROUTES
+# 7. FLASK CONTROLLER & THREADING
 # ==========================================
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "24x7 Real-Time Breakout Scanner Active"})
+    return jsonify({"status": "active", "system": "24x7 Dynamic Market Engine"})
 
 @app.route('/logs')
 def get_logs():
     return jsonify({"logs": system_logs})
 
 @app.route('/force-signal')
-def force_signal():
-    threading.Thread(target=run_single_scan_pass, kwargs={"force_mode": True}, daemon=True).start()
-    return "Instant market scan triggered! Check /logs in 5 seconds."
+def force_signal_endpoint():
+    threading.Thread(target=scan_and_dispatch, kwargs={"force_mode": True}, daemon=True).start()
+    return "Force scan initiated! Check Telegram Channels & /logs in 5 seconds."
 
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
-threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=continuous_scanner_loop, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
