@@ -19,6 +19,10 @@ VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
 
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
@@ -121,7 +125,7 @@ def verify_tron_txid(txid):
 
     url = f"https://api.trongrid.io/v1/accounts/{TRUST_WALLET_ADDRESS}/transactions/trc20"
     try:
-        res = requests.get(url, timeout=5.0)
+        res = requests.get(url, headers=HEADERS, timeout=3.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for tx in data:
@@ -147,32 +151,32 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. FIXED MULTI-EXCHANGE LIVE PRICE ENGINE
+# 4. FAST MULTI-EXCHANGE LIVE PRICE ENGINE
 # ==========================================
 def get_live_ticker_price(symbol):
-    # 1. Binance Spot API
+    # 1. Bybit V5 Spot API (Cloud Server Friendly)
     try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=3.0)
-        if res.status_code == 200:
-            return float(res.json()["price"])
-    except Exception:
-        pass
-
-    # 2. Binance Futures API (Backup)
-    try:
-        res = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}", timeout=3.0)
-        if res.status_code == 200:
-            return float(res.json()["price"])
-    except Exception:
-        pass
-
-    # 3. Bybit V5 Spot API (Fixed Payload Format)
-    try:
-        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3.0)
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", headers=HEADERS, timeout=2.0)
         if res.status_code == 200:
             result_list = res.json().get("result", {}).get("list", [])
             if result_list and "lastPrice" in result_list[0]:
                 return float(result_list[0]["lastPrice"])
+    except Exception:
+        pass
+
+    # 2. Binance Spot API
+    try:
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception:
+        pass
+
+    # 3. Binance Futures API
+    try:
+        res = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
+        if res.status_code == 200:
+            return float(res.json()["price"])
     except Exception:
         pass
 
@@ -181,7 +185,7 @@ def get_live_ticker_price(symbol):
 def fetch_klines(symbol, interval="1h", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        res = requests.get(url, timeout=4.0)
+        res = requests.get(url, headers=HEADERS, timeout=2.5)
         if res.status_code == 200:
             data = res.json()
             closes = [float(candle[4]) for candle in data]
@@ -249,7 +253,6 @@ def scan_market_for_signals():
     valid_signals = []
     used_symbols = set()
 
-    # 1. Indicator Scan (Unique Coins Only)
     for sym in watchlist:
         res = analyze_crypto_pair(sym)
         if res and res["symbol"] not in used_symbols:
@@ -257,9 +260,8 @@ def scan_market_for_signals():
             used_symbols.add(res["symbol"])
             if len(valid_signals) >= 2:
                 break
-        time.sleep(0.1)
+        time.sleep(0.05)
 
-    # 2. Backup Loop with Strict Dynamic Live Price Protection
     if len(valid_signals) < 2:
         fallback_list = ["SOLUSDT", "BTCUSDT", "ETHUSDT", "BNBUSDT"]
         for sym in fallback_list:
@@ -403,7 +405,7 @@ def process_free_bot_updates():
     while True:
         try:
             url = f"https://api.telegram.org/bot{FREE_BOT_TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout": 5, "offset": offset}, timeout=6.0)
+            res = requests.get(url, params={"timeout": 4, "offset": offset}, timeout=5.0)
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
@@ -423,7 +425,7 @@ def process_bot_updates():
     while True:
         try:
             url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates"
-            res = requests.get(url, params={"timeout": 5, "offset": offset}, timeout=6.0)
+            res = requests.get(url, params={"timeout": 4, "offset": offset}, timeout=5.0)
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
@@ -493,11 +495,9 @@ def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
     return "Signal Execution Triggered!"
 
-# Background Bot Polling Threads
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
 
-# Delayed First Scan (Ensures Render Web Service Starts Instantly Without Timeout)
 def delayed_first_scan():
     time.sleep(5)
     generate_and_send_signals()
