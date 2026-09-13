@@ -30,11 +30,12 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-vip_signals_today = 0
+# Tracking counters for daily limits
 free_signals_today = 0
-last_vip_time = 0
-last_free_time = 0
+vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
+last_free_dispatch_time = 0
+last_vip_dispatch_time = 0
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -149,10 +150,13 @@ def generate_24h_result_report():
         log_event(f"Result Generation Error: {e}")
 
 def scan_and_dispatch(force_mode=False):
-    global vip_signals_today, free_signals_today, last_vip_time, last_free_time, last_reset_day
+    global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
+    current_time = time.time()
     current_day = datetime.now(IST).day
+
+    # Reset counters on new day
     if current_day != last_reset_day:
         vip_signals_today = 0
         free_signals_today = 0
@@ -160,16 +164,18 @@ def scan_and_dispatch(force_mode=False):
         cleanup_3day_old_data()
         generate_24h_result_report()
 
-    now_time = time.time()
     coins = get_market_data()
     if not coins:
         log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    top_coin = coins[0]
-    p = top_coin["price"]
-    sym = top_coin["symbol"]
-    chg = top_coin["change"]
+    # Pick a rotating or unique coin to avoid repetition based on current count
+    coin_index = (vip_signals_today + free_signals_today) % len(coins)
+    selected_coin = coins[coin_index]
+    
+    p = selected_coin["price"]
+    sym = selected_coin["symbol"]
+    chg = selected_coin["change"]
     
     if chg >= 3.0:
         signal_mode = "FUTURES LONG"
@@ -191,24 +197,50 @@ def scan_and_dispatch(force_mode=False):
     setup = {
         "symbol": sym, "price": p, "mode": signal_mode, "leverage": leverage,
         "rsi": rsi_est, "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
-        "change": round(chg, 2), "low": top_coin.get("low", p * 0.95)
+        "change": round(chg, 2), "low": selected_coin.get("low", p * 0.95)
     }
 
-    log_event(f"📢 Dispatching signal for {sym} (Mode: {signal_mode})...")
-    dispatch_vip_signal(setup)
-    dispatch_free_signal(setup)
-    
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                       (sym, p, tp1, sl, now_time, now_str))
-        conn.commit()
-        conn.close()
-        log_event(f"✅ Signal history saved for {sym}")
-    except Exception as e:
-        log_event(f"History Save Error: {e}")
+    # VIP Channel: Target 12 to 36 signals per day (Interval ~ 40 mins to 2 hours)
+    # Free Channel: Target exactly 6 signals per day (Interval ~ 4 hours)
+    should_send_vip = False
+    should_send_free = False
+
+    if force_mode:
+        should_send_vip = True
+        should_send_free = True
+    else:
+        # VIP check: at least 40 minutes gap and under 36 daily limit
+        if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
+            should_send_vip = True
+
+        # Free check: at least 4 hours gap (14400 seconds) and under 6 daily limit
+        if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
+            should_send_free = True
+
+    if should_send_vip:
+        dispatch_vip_signal(setup)
+        vip_signals_today += 1
+        last_vip_dispatch_time = current_time
+        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
+
+    if should_send_free:
+        dispatch_free_signal(setup)
+        free_signals_today += 1
+        last_free_dispatch_time = current_time
+        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
+
+    # Save to history if any channel got the signal
+    if should_send_vip or should_send_free:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                           (sym, p, tp1, sl, current_time, now_str))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log_event(f"History Save Error: {e}")
 
 def dispatch_vip_signal(s):
     msg = (
@@ -231,9 +263,7 @@ def dispatch_vip_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
-    res = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
-    log_event(f"VIP Signal Dispatch Status: {res}")
-    return res
+    return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
 def dispatch_free_signal(s):
     msg = (
@@ -257,16 +287,14 @@ def dispatch_free_signal(s):
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
         f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
     )
-    res = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
-    log_event(f"Free Signal Dispatch Status: {res}")
-    return res
+    return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     
     if str(chat_id).startswith("-"):
-        pass  # Channels don't use standard keyboards
+        pass
     elif reply_markup:
         payload["reply_markup"] = reply_markup
     else:
@@ -474,11 +502,11 @@ def telegram_webhook():
     return jsonify({"status": "ok"})
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active...")
+    log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(1800)
+        time.sleep(600)  # Check every 10 minutes to manage frequencies accurately
 
 @app.route('/')
 def home(): return jsonify({"status": "active"})
