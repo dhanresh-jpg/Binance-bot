@@ -173,7 +173,7 @@ def get_live_ticker_price(symbol):
         pass
     return None
 
-def fetch_klines(symbol, interval="1h", limit=40):
+def fetch_klines(symbol, interval="1h", limit=30):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -217,8 +217,8 @@ def calculate_ema(prices, span):
     return ema[-1]
 
 def analyze_market_setup(symbol):
-    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=40)
-    if closes is None or len(closes) < 20:
+    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=30)
+    if closes is None or len(closes) < 15:
         return None, 0
 
     live_price = get_live_ticker_price(symbol)
@@ -227,15 +227,14 @@ def analyze_market_setup(symbol):
 
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
-    ema50 = calculate_ema(closes, 50)
-    recent_high = np.max(highs[-10:-1])
+    ema50 = calculate_ema(closes, 50) if len(closes) >= 50 else ema20 * 0.99
+    recent_high = np.max(highs[-8:-1])
 
-    # Score-based Strategy Matching
+    # Dynamic Scoring Strategy (Balanced for smooth 12-36 signals/day)
     score = 0
-    if live_price >= recent_high * 0.99: score += 40
-    if live_price > ema20: score += 30
-    if ema20 > ema50: score += 15
-    if 42 <= rsi <= 75: score += 15
+    if live_price >= recent_high * 0.985: score += 35
+    if live_price >= ema20: score += 35
+    if 40 <= rsi <= 78: score += 30
 
     atr = np.mean(highs[-10:] - lows[-10:])
     setup = {
@@ -244,7 +243,7 @@ def analyze_market_setup(symbol):
         "rsi": round(rsi, 2),
         "atr": atr,
         "score": score,
-        "signal_type": "FUTURES" if rsi > 56 else "SPOT"
+        "signal_type": "FUTURES" if rsi > 54 else "SPOT"
     }
     return setup, score
 
@@ -270,25 +269,27 @@ def scan_and_dispatch(force_mode=False):
     candidates = []
 
     for sym in watchlist:
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 7200:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 3600:
             continue
 
         setup, score = analyze_market_setup(sym)
-        if setup and score >= 60:
+        if setup and score >= 40:
             candidates.append(setup)
 
-    # Sort candidates by top strength score
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
     sent_count = 0
-    for setup in candidates[:2]:
-        dispatch_single_signal(setup)
-        sent_cooldown[setup["symbol"]] = now_time
-        sent_count += 1
-        time.sleep(2)
+    # Dispatch top candidate
+    if candidates:
+        to_dispatch = candidates[:1] if not force_mode else candidates[:2]
+        for setup in to_dispatch:
+            dispatch_single_signal(setup)
+            sent_cooldown[setup["symbol"]] = now_time
+            sent_count += 1
+            time.sleep(2)
 
     if sent_count == 0:
-        log_event("Scan completed: Waiting for next high-accuracy breakout setup.")
+        log_event("Scan completed: Waiting for market condition match.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -315,11 +316,11 @@ def dispatch_single_signal(setup):
     stype = setup["signal_type"]
 
     if stype == "SPOT":
-        tp1, tp2, sl = p + (atr * 1.4), p + (atr * 2.8), p - (atr * 1.1)
+        tp1, tp2, sl = p + (atr * 1.5), p + (atr * 3.0), p - (atr * 1.2)
         msg = (
             f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n"
             f"🪙 <b>Coin</b>: #{sym}\n"
-            f"📈 <b>Analysis</b>: 1H Trend Breakout + EMA Support Bounce\n"
+            f"📈 <b>Analysis</b>: EMA Support + Resistance Momentum\n"
             f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
             f"📊 <b>RSI Strength</b>: {rsi}\n\n"
             f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
@@ -327,7 +328,7 @@ def dispatch_single_signal(setup):
             f"⛔ <b>Stop Loss</b>: ${format_price(sl)}"
         )
     else:
-        tp1, tp2, sl = p + (atr * 1.2), p + (atr * 2.4), p - (atr * 0.9)
+        tp1, tp2, sl = p + (atr * 1.2), p + (atr * 2.5), p - (atr * 1.0)
         msg = (
             f"⚡ <b>[VIP FUTURES MOMENTUM LONG]</b>\n"
             f"🪙 <b>Coin</b>: #{sym}\n"
