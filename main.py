@@ -10,7 +10,7 @@ from flask import Flask, jsonify
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
 # ==========================================
-FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
+FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EHXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
 
 FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
@@ -227,14 +227,12 @@ def analyze_market_setup(symbol):
 
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
-    ema50 = calculate_ema(closes, 50) if len(closes) >= 50 else ema20 * 0.99
     recent_high = np.max(highs[-8:-1])
 
-    # Dynamic Scoring Strategy (Balanced for smooth 12-36 signals/day)
     score = 0
-    if live_price >= recent_high * 0.985: score += 35
-    if live_price >= ema20: score += 35
-    if 40 <= rsi <= 78: score += 30
+    if live_price >= recent_high * 0.98: score += 40
+    if live_price >= ema20: score += 30
+    if 35 <= rsi <= 80: score += 30
 
     atr = np.mean(highs[-10:] - lows[-10:])
     setup = {
@@ -243,7 +241,7 @@ def analyze_market_setup(symbol):
         "rsi": round(rsi, 2),
         "atr": atr,
         "score": score,
-        "signal_type": "FUTURES" if rsi > 54 else "SPOT"
+        "signal_type": "FUTURES" if rsi > 52 else "SPOT"
     }
     return setup, score
 
@@ -252,7 +250,7 @@ def analyze_market_setup(symbol):
 # ==========================================
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Real-Time Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Guaranteed Market Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
@@ -269,27 +267,20 @@ def scan_and_dispatch(force_mode=False):
     candidates = []
 
     for sym in watchlist:
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 3600:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 1800:
             continue
 
         setup, score = analyze_market_setup(sym)
-        if setup and score >= 40:
+        if setup:
             candidates.append(setup)
 
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-
-    sent_count = 0
-    # Dispatch top candidate
     if candidates:
-        to_dispatch = candidates[:1] if not force_mode else candidates[:2]
-        for setup in to_dispatch:
-            dispatch_single_signal(setup)
-            sent_cooldown[setup["symbol"]] = now_time
-            sent_count += 1
-            time.sleep(2)
-
-    if sent_count == 0:
-        log_event("Scan completed: Waiting for market condition match.")
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        best_candidate = candidates[0]
+        dispatch_single_signal(best_candidate)
+        sent_cooldown[best_candidate["symbol"]] = now_time
+    else:
+        log_event("Scan completed: Data fetch issue on all symbols.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -298,7 +289,7 @@ def continuous_market_scanner():
             scan_and_dispatch(force_mode=False)
         except Exception as e:
             log_event(f"Scanner Loop Error: {e}")
-        time.sleep(180) # Rescan every 3 minutes
+        time.sleep(180)
 
 def format_price(val):
     if val is None or val == 0: return "0.00"
@@ -464,7 +455,7 @@ def process_bot_updates():
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "Real-Time Scoring TA Engine Running"})
+    return jsonify({"status": "active", "system": "Guaranteed Dispatch Engine Running"})
 
 @app.route('/logs')
 def get_logs():
