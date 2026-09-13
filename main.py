@@ -123,7 +123,7 @@ def record_channel_message(bot_type, chat_id, message_id):
 # ==========================================
 def verify_tron_txid(txid):
     if is_txid_processed(txid):
-        return False, "This TXID has already been used and verified!"
+        return False, "This TXID has already been processed!"
 
     url = f"https://api.trongrid.io/v1/accounts/{TRUST_WALLET_ADDRESS}/transactions/trc20"
     try:
@@ -145,8 +145,8 @@ def verify_tron_txid(txid):
                             mark_txid_processed(txid)
                             return True, (10, value)
                         else:
-                            return False, f"Received ${value} USDT, minimum plan required is $10 USDT."
-            return False, "Transaction not found on TRON Network yet. Please wait 1-2 minutes."
+                            return False, f"Received ${value} USDT. Minimum plan amount is $10 USDT."
+            return False, "Transaction not found on TRON Network yet. Please wait 1-2 minutes and try again."
     except Exception as e:
         log_event(f"TronGrid Verification Error: {e}")
         return False, "Error querying Blockchain API."
@@ -156,7 +156,6 @@ def verify_tron_txid(txid):
 # 4. HIGH-RELIABILITY MARKET DATA ENGINE
 # ==========================================
 def fetch_klines(symbol, interval="60", limit=30):
-    # Primary Source: Bybit Public Kline V5
     url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -171,7 +170,6 @@ def fetch_klines(symbol, interval="60", limit=30):
     except Exception:
         pass
 
-    # Secondary Source: Binance Public Klines
     url_b = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
     try:
         res = requests.get(url_b, headers=HEADERS, timeout=2.5)
@@ -270,10 +268,8 @@ def scan_and_dispatch(force_mode=False):
         setup, score = analyze_market_setup(sym)
         if setup:
             if force_mode:
-                # Force Mode: Add every analyzed setup regardless of score
                 candidates.append(setup)
             else:
-                # Auto Scan: Only add if requirement (Score >= 35) is met
                 if score >= 35:
                     candidates.append(setup)
 
@@ -284,7 +280,7 @@ def scan_and_dispatch(force_mode=False):
         dispatch_single_signal(top_setup)
         sent_cooldown[top_setup["symbol"]] = now_time
     else:
-        log_event("Scan Completed: No coin met score standard (>=35) right now.")
+        log_event("Scan Completed: No setup meets the criteria right now.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -313,10 +309,10 @@ def dispatch_single_signal(setup):
     if stype == "SPOT":
         tp1, tp2, sl = p + (atr * 1.5), p + (atr * 3.0), p - (atr * 1.2)
         msg = (
-            f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n"
-            f"🪙 <b>Coin</b>: #{sym}\n"
-            f"📈 <b>Analysis</b>: Dynamic Breakout + Volume Surge\n"
-            f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
+            f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n\n"
+            f"🪙 <b>Pair</b>: #{sym}\n"
+            f"📈 <b>Analysis</b>: Bullish Momentum + Volume Surge\n"
+            f"📥 <b>Entry Zone</b>: ${format_price(p)}\n"
             f"📊 <b>RSI Strength</b>: {rsi}\n\n"
             f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
             f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
@@ -325,10 +321,10 @@ def dispatch_single_signal(setup):
     else:
         tp1, tp2, sl = p + (atr * 1.2), p + (atr * 2.5), p - (atr * 1.0)
         msg = (
-            f"⚡ <b>[VIP FUTURES MOMENTUM LONG]</b>\n"
-            f"🪙 <b>Coin</b>: #{sym}\n"
+            f"⚡ <b>[VIP FUTURES MOMENTUM LONG]</b>\n\n"
+            f"🪙 <b>Pair</b>: #{sym}\n"
             f"⚙️ <b>Leverage</b>: Cross 5x - 10x\n"
-            f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
+            f"📥 <b>Entry Zone</b>: ${format_price(p)}\n"
             f"📊 <b>RSI Indicator</b>: {rsi}\n\n"
             f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
             f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
@@ -340,12 +336,12 @@ def dispatch_single_signal(setup):
     r_free = False
     if free_signals_today < 6:
         free_promo = (
-            f"🔥 <b>LIVE REAL-TIME VIP PREVIEW</b> 🔥\n"
+            f"🔥 <b>REAL-TIME VIP PREVIEW</b> 🔥\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{msg}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-            f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+            f"💎 <b>Get All VIP Signals:</b> @BinanceTop10_VIPBot"
         )
         r_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
         if r_free:
@@ -384,8 +380,8 @@ def create_vip_invite_link():
 def get_vip_menu_keyboard():
     return {
         "keyboard": [
-            [{"text": "💎 VIP Plans"}, {"text": "💳 Get Pay Address"}],
-            [{"text": "📊 Free vs VIP Comparison"}, {"text": "❓ How To Verify"}]
+            [{"text": "💎 VIP Plans"}, {"text": "💳 Payment Address"}],
+            [{"text": "📊 Free vs VIP Comparison"}, {"text": "❓ Verification Guide"}]
         ],
         "resize_keyboard": True
     }
@@ -403,8 +399,8 @@ def process_free_bot_updates():
                     if user_id:
                         welcome_free = (
                             f"👋 <b>Welcome to Binance Top 10 Signals!</b>\n\n"
-                            f"📢 <b>Join Free Signal Channel</b>:\nhttps://t.me/BinanceTop10Free\n\n"
-                            f"💎 <b>VIP Bot Access</b>:\n@BinanceTop10_VIPBot"
+                            f"📢 <b>Join Our Free Channel</b>:\nhttps://t.me/BinanceTop10Free\n\n"
+                            f"💎 <b>Access Premium VIP Channel</b>:\n@BinanceTop10_VIPBot"
                         )
                         send_telegram_msg(FREE_BOT_TOKEN, user_id, welcome_free)
         except Exception:
@@ -425,31 +421,45 @@ def process_bot_updates():
                     if not text or not user_id: continue
 
                     if text in ["/start", "🔙 Main Menu"]:
-                        welcome = "🤖 <b>Welcome to Binance Top 10 VIP Bot!</b>\n\nSelect an option below:"
+                        welcome = "🤖 <b>Welcome to Binance Top 10 VIP Bot!</b>\n\nPlease select an option from below:"
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, welcome, reply_markup=get_vip_menu_keyboard())
 
                     elif text in ["/plans", "💎 VIP Plans"]:
-                        plans_txt = "💎 <b>VIP SUBSCRIPTION PLANS</b>\n\n🔹 10 Days: 10 USDT\n🔹 20 Days: 19 USDT\n🔹 30 Days: 27 USDT"
+                        plans_txt = (
+                            "💎 <b>VIP SUBSCRIPTION PLANS</b>\n\n"
+                            "🔹 10 Days Access: 10 USDT\n"
+                            "🔹 20 Days Access: 19 USDT\n"
+                            "🔹 30 Days Access: 27 USDT"
+                        )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt)
 
-                    elif text in ["/pay", "💳 Get Pay Address"]:
-                        pay_txt = f"💳 <b>USDT TRC-20 Address</b>:\n<code>{TRUST_WALLET_ADDRESS}</code>\n\nSend <code>/verify YOUR_TXID</code> after payment."
+                    elif text in ["/pay", "💳 Payment Address"]:
+                        pay_txt = (
+                            f"💳 <b>USDT TRC-20 Payment Address</b>:\n"
+                            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                            f"After payment, send <code>/verify YOUR_TXID</code> to activate."
+                        )
                         send_telegram_msg(VIP_BOT_TOKEN, user_id, pay_txt, reply_markup=get_vip_menu_keyboard())
 
                     elif text.startswith("/verify"):
                         parts = text.split()
                         if len(parts) >= 2:
                             txid = parts[1].strip()
-                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "🔍 Verifying transaction...")
+                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "🔍 Verifying transaction on Blockchain...")
                             is_valid, result = verify_tron_txid(txid)
                             if is_valid:
                                 days, amount = result
                                 exp_date = add_vip_member(user_id, days)
                                 invite_link = create_vip_invite_link()
-                                success_msg = f"✅ <b>VERIFIED!</b>\nAmount: ${amount} USDT\nExpiry: {exp_date}\n\nJoin Link:\n{invite_link}"
+                                success_msg = (
+                                    f"✅ <b>PAYMENT VERIFIED!</b>\n\n"
+                                    f"💰 Amount Received: ${amount} USDT\n"
+                                    f"📅 Expiry Date: {exp_date}\n\n"
+                                    f"🔗 <b>Your Single-Use VIP Channel Link:</b>\n{invite_link}"
+                                )
                                 send_telegram_msg(VIP_BOT_TOKEN, user_id, success_msg, reply_markup=get_vip_menu_keyboard())
                             else:
-                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"❌ Failed: {result}")
+                                send_telegram_msg(VIP_BOT_TOKEN, user_id, f"❌ Verification Failed: {result}")
         except Exception:
             time.sleep(2)
 
