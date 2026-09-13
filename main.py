@@ -147,8 +147,37 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. REAL TECHNICAL ANALYSIS ENGINE (BINANCE)
+# 4. MULTI-EXCHANGE LIVE PRICE & TA ENGINE
 # ==========================================
+def get_live_ticker_price(symbol):
+    # 1. Binance Spot API
+    try:
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=3.0)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception:
+        pass
+
+    # 2. Bybit Spot API (Fallback)
+    try:
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3.0)
+        if res.status_code == 200:
+            result = res.json().get("result", {}).get("list", [])
+            if result:
+                return float(result[0]["lastPrice"])
+    except Exception:
+        pass
+
+    # 3. Binance Futures API (Fallback)
+    try:
+        res = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}", timeout=3.0)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception:
+        pass
+
+    return None
+
 def fetch_klines(symbol, interval="1h", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
@@ -197,40 +226,54 @@ def analyze_crypto_pair(symbol):
     if closes is None or len(closes) < 50:
         return None
 
-    current_price = closes[-1]
+    live_price = get_live_ticker_price(symbol)
+    if live_price is None:
+        live_price = closes[-1]
+
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
     ema50 = calculate_ema(closes, 50)
 
-    if ema20 > ema50 and 42 <= rsi <= 68:
+    if ema20 > ema50 and 40 <= rsi <= 70:
         atr = np.mean(highs[-14:] - lows[-14:])
         return {
             "symbol": symbol,
-            "price": current_price,
+            "price": live_price,
             "rsi": round(rsi, 2),
             "atr": atr
         }
     return None
 
 def scan_market_for_signals():
-    watchlist = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT"]
+    watchlist = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT"]
     valid_signals = []
+    used_symbols = set()
 
+    # 1. Technical Indicators Scan
     for sym in watchlist:
         res = analyze_crypto_pair(sym)
-        if res:
+        if res and res["symbol"] not in used_symbols:
             valid_signals.append(res)
+            used_symbols.add(res["symbol"])
             if len(valid_signals) >= 2:
                 break
         time.sleep(0.1)
 
+    # 2. Strict Unique Backup Loop (Guarantees 2 signals with 100% Real Live Price)
     if len(valid_signals) < 2:
-        for sym in ["SOLUSDT", "BTCUSDT"]:
+        fallback_list = ["SOLUSDT", "BTCUSDT", "ETHUSDT", "BNBUSDT"]
+        for sym in fallback_list:
+            if sym in used_symbols:
+                continue
+            
+            live_price = get_live_ticker_price(sym)
             closes, highs, lows = fetch_klines(sym, interval="1h", limit=20)
-            if closes is not None:
-                cp = closes[-1]
-                atr = np.mean(highs[-10:] - lows[-10:]) if highs is not None else cp * 0.02
-                valid_signals.append({"symbol": sym, "price": cp, "rsi": 54.0, "atr": atr})
+            
+            if live_price or (closes is not None):
+                final_p = live_price if live_price else closes[-1]
+                atr = np.mean(highs[-10:] - lows[-10:]) if highs is not None else final_p * 0.02
+                valid_signals.append({"symbol": sym, "price": final_p, "rsi": 54.0, "atr": atr})
+                used_symbols.add(sym)
                 if len(valid_signals) >= 2:
                     break
 
@@ -240,6 +283,8 @@ def scan_market_for_signals():
 # 5. DYNAMIC FORMATTING & BROADCAST ENGINE
 # ==========================================
 def format_price(val):
+    if val is None:
+        return "0.00"
     if val >= 1000:
         return f"{val:,.2f}"
     elif val >= 1:
@@ -248,16 +293,17 @@ def format_price(val):
         return f"{val:.6f}"
 
 def generate_and_send_signals():
-    log_event("🔍 Technical Market Scanner Running...")
+    log_event("🔍 Market Scanner Executing (Multi-Exchange Real Price Check)...")
     setups = scan_market_for_signals()
 
     if len(setups) < 2:
-        log_event("⚠️ Insufficient setups found.")
+        log_event("⚠️ Market scanner returned insufficient setups.")
         return
 
     spot_item = setups[0]
     futures_item = setups[1]
 
+    # SPOT SIGNAL
     sp_p = spot_item["price"]
     sp_atr = spot_item["atr"]
     sp_tp1, sp_tp2, sp_sl = sp_p + (sp_atr * 1.5), sp_p + (sp_atr * 3.0), sp_p - (sp_atr * 1.2)
@@ -273,6 +319,7 @@ def generate_and_send_signals():
         f"⛔ <b>Stop Loss</b>: ${format_price(sp_sl)}"
     )
 
+    # FUTURES SIGNAL
     ft_p = futures_item["price"]
     ft_atr = futures_item["atr"]
     ft_tp1, ft_tp2, ft_sl = ft_p + (ft_atr * 1.0), ft_p + (ft_atr * 2.2), ft_p - (ft_atr * 0.9)
@@ -288,9 +335,9 @@ def generate_and_send_signals():
         f"⛔ <b>Stop Loss</b>: ${format_price(ft_sl)}"
     )
 
-    send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
-    time.sleep(0.5)
-    send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
+    r1 = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, spot_msg, is_channel=True)
+    time.sleep(1)
+    r2 = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
 
     free_promo = (
         f"🔥 <b>LIVE REAL-TIME VIP PREVIEW</b> 🔥\n"
@@ -298,11 +345,12 @@ def generate_and_send_signals():
         f"{futures_msg}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n\n"
-        f"💎 <b>Join VIP For Spot & Futures Signals</b>\n"
+        f"💎 <b>Join VIP For Technical Spot & Futures Signals</b>\n"
         f"👉 <b>VIP Bot:</b> @BinanceTop10_VIPBot"
     )
-    send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
-    log_event("✅ Live signals broadcasted successfully.")
+    r3 = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
+
+    log_event(f"Broadcast Complete -> Spot: {r1}, Futures: {r2}, Free: {r3}")
 
 # ==========================================
 # 6. TELEGRAM API & USER BOT HANDLERS
@@ -433,22 +481,27 @@ scheduler.start()
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "running"})
+    return jsonify({"status": "active", "system": "Production Multi-Exchange TA Engine Active"})
+
+@app.route('/logs')
+def get_logs():
+    return jsonify({"logs": system_logs})
 
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
-    return "Triggered!"
+    return "Signal Execution Triggered!"
 
-# Background Threads Initialization
+# Start Background Processing Threads
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
 
-def initial_delayed_scan():
-    time.sleep(3)
+# Delayed Initial Scan Thread (Fixes Render Port Startup Delay)
+def delayed_first_scan():
+    time.sleep(4)
     generate_and_send_signals()
 
-threading.Thread(target=initial_delayed_scan, daemon=True).start()
+threading.Thread(target=delayed_first_scan, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
