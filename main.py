@@ -20,7 +20,7 @@ HEADERS = {
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
-sent_cooldown = {} 
+free_signals_today = 0
 last_reset_day = datetime.now(IST).day
 
 def log_event(message):
@@ -37,21 +37,10 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
         cursor.execute('CREATE TABLE IF NOT EXISTS channel_messages (bot_type TEXT, chat_id TEXT, message_id INTEGER, created_date TEXT)')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS signal_history (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                            symbol TEXT, 
-                            entry_price REAL, 
-                            tp1 REAL, 
-                            tp2 REAL, 
-                            sl REAL, 
-                            timestamp REAL, 
-                            created_date TEXT, 
-                            status TEXT DEFAULT "PENDING",
-                            t1_hit INTEGER DEFAULT 0
-                        )''')
+        cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Target Hit Tracker.")
+        log_event("Database Initialized with Anti-Repeat & 24h Lock Engine.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -68,7 +57,7 @@ def cleanup_3day_old_data():
         conn.commit()
         conn.close()
         if deleted_count > 0:
-            log_event(f"🧹 3-Day Rotation Reset: Cleaned {deleted_count} old signal records.")
+            log_event(f"🧹 3-Day Rotation Reset: Cleaned {deleted_count} old records.")
     except Exception as e:
         log_event(f"Cleanup Error: {e}")
 
@@ -103,50 +92,7 @@ def get_market_data():
             if valid_coins: return valid_coins
     except Exception as e:
         log_event(f"OKX Fetch Failed: {e}")
-
     return valid_coins
-
-# ====================================================
-# CHECK & BROADCAST TARGET HITS & 24H RESULTS
-# ====================================================
-def monitor_and_report_targets():
-    try:
-        coins = get_market_data()
-        if not coins: return
-        coins_map = {c["symbol"]: c["price"] for c in coins}
-
-        conn = sqlite3.connect("vip_members.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, symbol, entry_price, tp1, t1_hit FROM signal_history WHERE status = 'PENDING'")
-        active_signals = cursor.fetchall()
-
-        for sig in active_signals:
-            sig_id, sym, entry, tp1, t1_hit = sig
-            current_price = coins_map.get(sym)
-
-            if current_price and t1_hit == 0:
-                if current_price >= tp1:
-                    # Target 1 Hit! Broadcast to Free and VIP Channels
-                    profit_pct = round(((tp1 - entry) / entry) * 100, 2)
-                    hit_msg = (
-                        f"🎯 **VIP TARGET 1 HIT!** ✅\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🪙 **Pair**: #{sym}\n"
-                        f"📥 **Entry Price**: ${format_price(entry)}\n"
-                        f"🚀 **Target 1 Achieved**: ${format_price(tp1)}\n"
-                        f"💰 **Profit Booked**: `+{profit_pct}%`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 *Another successful VIP setup secured!*"
-                    )
-                    send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, hit_msg, is_channel=True)
-                    send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, hit_msg, is_channel=True)
-                    
-                    cursor.execute("UPDATE signal_history SET t1_hit = 1 WHERE id = ?", (sig_id,))
-                    conn.commit()
-                    log_event(f"🎯 Target 1 Hit broadcasted for #{sym}!")
-        conn.close()
-    except Exception as e:
-        log_event(f"Target Monitor Error: {e}")
 
 def generate_24h_result_report():
     try:
@@ -175,14 +121,14 @@ def generate_24h_result_report():
         win_rate = round((wins / total_signals) * 100, 1) if total_signals > 0 else 100.0
 
         report_msg = (
-            f"📊 **24-HOUR VIP SIGNAL RESULTS REPORT** 📊\n"
+            f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ **Total Signals Dispatched**: {total_signals}\n"
-            f"🎯 **Targets Hit / Profit Trades**: {wins}\n"
-            f"⛔ **Stop Losses Hit**: {losses}\n"
-            f"🔥 **Win Rate Accuracy**: {win_rate}%\n"
+            f"✅ <b>Total Signals Dispatched</b>: {total_signals}\n"
+            f"🎯 <b>Targets Hit / Profit Trades</b>: {wins}\n"
+            f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
+            f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 **Join VIP Channel Now:** @BinanceTop10_VIPBot"
+            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
         )
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg, is_channel=True)
@@ -194,30 +140,45 @@ def generate_24h_result_report():
         log_event(f"Result Generation Error: {e}")
 
 def scan_and_dispatch(force_mode=False):
-    global last_reset_day
+    global free_signals_today, last_reset_day
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
+        free_signals_today = 0
         last_reset_day = current_day
-        cleanup_3day_old_data()      
-        generate_24h_result_report() 
+        cleanup_3day_old_data()
+        generate_24h_result_report()
 
     coins = get_market_data()
-    now_time = time.time()
-    
     if not coins:
         log_event("❌ APIs unavailable. Retrying next cycle.")
         return
 
-    coins.sort(key=lambda x: abs(x["change"]), reverse=True)
-    top_coin = None
-    for c in coins:
-        if force_mode or (c["symbol"] not in sent_cooldown or (now_time - sent_cooldown[c["symbol"]]) >= 1800):
-            top_coin = c
-            break
+    # ====================================================
+    # ANTI-REPEAT FILTER (Excludes coins active in last 24 hrs)
+    # ====================================================
+    active_symbols = set()
+    if not force_mode:
+        try:
+            conn = sqlite3.connect("vip_members.db")
+            cursor = conn.cursor()
+            twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("SELECT DISTINCT symbol FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+            active_symbols = {row[0] for row in cursor.fetchall()}
+            conn.close()
+        except Exception as e:
+            log_event(f"Active Symbol Check Error: {e}")
 
-    if not top_coin: top_coin = coins[0]
+    # Filter out coins that already have an active 24h signal
+    available_coins = [c for c in coins if c["symbol"] not in active_symbols]
+
+    if not available_coins:
+        log_event("⚠️ All coins have active signals in the last 24h. Bypassing filter temporarily for rotation.")
+        available_coins = coins
+
+    available_coins.sort(key=lambda x: abs(x["change"]), reverse=True)
+    top_coin = available_coins[0]
 
     p = top_coin["price"]
     sym = top_coin["symbol"]
@@ -242,49 +203,63 @@ def scan_and_dispatch(force_mode=False):
         "change": round(chg, 2), "low": top_coin.get("low", p * 0.95)
     }
 
-    # DISPATCH EXCLUSIVELY TO VIP CHANNEL (Free channel gets only target hits & results)
-    dispatch_vip_signal(setup)
-    sent_cooldown[sym] = now_time
+    dispatch_professional_signal(setup)
     
+    # Save Signal History to enforce 24h lock
     try:
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
         now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                       (sym, p, tp1, tp2, sl, now_time, now_str))
+        cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                       (sym, p, tp1, sl, time.time(), now_str))
         conn.commit()
         conn.close()
     except Exception as e:
         log_event(f"History Save Error: {e}")
 
-def dispatch_vip_signal(s):
+def dispatch_professional_signal(s):
+    global free_signals_today
+
     msg = (
-        f"🚨 **BINANCE VIP TRADE SIGNAL** 🚨\n"
+        f"🚨 <b>BINANCE VIP TRADE SIGNAL</b> 🚨\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 **Pair**: #{s['symbol']}\n"
-        f"📊 **Market Type**: `{s['mode']}`\n"
-        f"⚙️ **Leverage**: {s['leverage']}\n"
+        f"🪙 <b>Pair</b>: #{s['symbol']}\n"
+        f"📊 <b>Market Type</b>: <code>{s['mode']}</code>\n"
+        f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📥 **Entry Zone**: ${format_price(s['price'])}\n\n"
-        f"🎯 **Target 1**: ${format_price(s['tp1'])}\n"
-        f"🎯 **Target 2**: ${format_price(s['tp2'])}\n"
-        f"🚀 **Target 3 (Max)**: ${format_price(s['tp3'])}\n"
-        f"⛔ **Stop Loss**: ${format_price(s['sl'])}\n"
+        f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
+        f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
+        f"🎯 <b>Target 2</b>: ${format_price(s['tp2'])}\n"
+        f"🚀 <b>Target 3 (Max)</b>: ${format_price(s['tp3'])}\n"
+        f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 **24h Change**: {s['change']}%\n"
-        f"📊 **RSI Indicator**: {s['rsi']} (Bullish Momentum)\n"
-        f"🛡️ **Key Support Level**: ${format_price(s['low'])}\n"
-        f"⚖️ **Risk / Reward**: 1 : 2.5\n"
+        f"📈 <b>24h Change</b>: {s['change']}%\n"
+        f"📊 <b>RSI Indicator</b>: {s['rsi']} (Bullish Momentum)\n"
+        f"🛡️ <b>Key Support Level</b>: ${format_price(s['low'])}\n"
+        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ *Use 2-5% of total wallet balance per trade.*"
+        f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
 
     r_vip = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
-    log_event(f"🎯 VIP Signal Dispatched #{s['symbol']} | Status: {r_vip}")
+
+    r_free = False
+    if free_signals_today < 6:
+        free_promo = (
+            f"🔥 <b>REAL-TIME VIP SIGNAL PREVIEW</b> 🔥\n\n"
+            f"{msg}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
+            f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+        )
+        r_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
+        if r_free: free_signals_today += 1
+
+    log_event(f"🎯 Broadcasted #{s['symbol']} @ ${format_price(s['price'])} | VIP: {r_vip} | Free: {r_free}")
 
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if reply_markup: payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=5.0)
@@ -292,11 +267,9 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=Fa
     except Exception: return False
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active (Free Channel set to Target Hits & Results only)...")
+    log_event("🚀 Engine Active with 24h Anti-Repeat Lock...")
     while True:
-        try: 
-            scan_and_dispatch(force_mode=False)
-            monitor_and_report_targets()
+        try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
         time.sleep(180)
 
