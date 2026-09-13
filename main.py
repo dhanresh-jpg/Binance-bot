@@ -21,11 +21,11 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 
-# Exact Reply Keyboard Layout
+# Updated Reply Keyboard Layout (4 Buttons)
 KEYBOARD_LAYOUT = {
     "keyboard": [
         [{"text": "💎 View VIP Plans"}, {"text": "💳 Get Payment Address"}],
-        [{"text": "✅ How to Verify TXID"}, {"text": "📊 Live System Status"}]
+        [{"text": "🔍 Verify Payment"}, {"text": "✅ How to Verify TXID"}]
     ],
     "resize_keyboard": True
 }
@@ -54,7 +54,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Long/Short/Spot Engine & UI.")
+        log_event("Database Initialized Successfully.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -160,9 +160,7 @@ def scan_and_dispatch(force_mode=False):
 
     now_time = time.time()
     coins = get_market_data()
-    if not coins:
-        log_event("❌ APIs unavailable. Retrying next cycle.")
-        return
+    if not coins: return
 
     last_signals = {}
     try:
@@ -212,8 +210,7 @@ def scan_and_dispatch(force_mode=False):
         "change": round(chg, 2), "low": top_coin.get("low", p * 0.95)
     }
 
-    r_vip = False
-    r_free = False
+    r_vip, r_free = False, False
 
     if force_mode or (vip_signals_today < 36 and (now_time - last_vip_time >= 3600)):
         r_vip = dispatch_vip_signal(setup)
@@ -236,8 +233,6 @@ def scan_and_dispatch(force_mode=False):
         if r_free:
             free_signals_today += 1
             last_free_time = now_time
-
-    log_event(f"🎯 Scan Complete #{sym} | VIP Sent ({vip_signals_today}/36): {r_vip} | Free Sent ({free_signals_today}/12): {r_free}")
 
 def dispatch_vip_signal(s):
     msg = (
@@ -295,8 +290,42 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
         return res.json().get("ok", False)
     except Exception: return False
 
-# Telegram Webhook / Update Handler for VIP Bot Buttons & Commands
-@app.route(f'/webhook/{VIP_BOT_TOKEN}', methods=['POST'])
+def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
+    try:
+        url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
+        res = requests.get(url, timeout=5.0)
+        if res.status_code != 200:
+            return False, "API Error or Invalid TXID."
+        
+        data = res.json()
+        if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
+            return False, "Transaction is failed or not found on blockchain."
+            
+        trc20_transfers = data.get("trc20TransferInfo", [])
+        if not trc20_transfers:
+            return False, "No USDT TRC20 transfer found in this TXID."
+            
+        valid_transfer = False
+        for t in trc20_transfers:
+            to_addr = t.get("to_address", "")
+            symbol = t.get("symbol", "")
+            raw_amount = float(t.get("amount_str", "0")) / 10**6
+            
+            if (to_addr == TRUST_WALLET_ADDRESS and 
+                symbol == "USDT" and 
+                raw_amount >= expected_amount_min):
+                valid_transfer = True
+                break
+                
+        if valid_transfer:
+            return True, "Verification Successful!"
+        else:
+            return False, "Recipient address or payment amount doesn't match."
+    except Exception as e:
+        return False, f"Verification error: {e}"
+
+# Telegram Webhook Handler with Substring Matching & Auto-Verification
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
     if not data or "message" not in data: return jsonify({"status": "ok"})
@@ -313,61 +342,80 @@ def telegram_webhook():
         )
         send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text, reply_markup=KEYBOARD_LAYOUT)
         
-    elif text == "💎 View VIP Plans":
+    elif "View VIP Plans" in text:
         plan_text = (
-            "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n━━━━━━━━━━━━━━━━━━━━━\n"
-            "• <b>1 Month VIP</b>: $30 USDT\n• <b>Lifetime VIP</b>: $99 USDT\n\n"
+            "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <b>10 Days VIP</b>: $10 USDT\n"
+            "• <b>20 Days VIP</b>: $19 USDT\n"
+            "• <b>30 Days VIP</b>: $28 USDT\n\n"
             "<i>Click 'Get Payment Address' to proceed with payment.</i>"
         )
         send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text, reply_markup=KEYBOARD_LAYOUT)
         
-    elif text == "💳 Get Payment Address":
+    elif "Get Payment Address" in text:
         pay_text = (
-            "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n━━━━━━━━━━━━━━━━━━━━━\n"
+            "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
             f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
             "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
         )
         send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text, reply_markup=KEYBOARD_LAYOUT)
         
-    elif text == "✅ How to Verify TXID":
+    elif "Verify Payment" in text:
+        verify_text = (
+            "🔍 <b>PAYMENT VERIFICATION</b> 🔍\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Please send your <b>Transaction ID (TXID)</b> right here in the chat.\n\n"
+            "Our automated system will instantly verify your TRC20 transfer and activate your VIP access!"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text, reply_markup=KEYBOARD_LAYOUT)
+        
+    elif "How to Verify TXID" in text:
         guide_text = (
-            "📖 <b>HOW TO VERIFY PAYMENT</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            "📖 <b>HOW TO VERIFY PAYMENT</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
             "1. Transfer the required USDT to our TRC20 wallet.\n"
             "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
             "3. Send your TXID here in chat for automatic verification and VIP activation."
         )
         send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text, reply_markup=KEYBOARD_LAYOUT)
         
-    elif text == "📊 Live System Status":
-        status_text = (
-            "📊 <b>SYSTEM STATUS</b> 📊\n━━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ <b>Engine</b>: Online & Scanning OKX\n"
-            f"📈 <b>VIP Signals Today</b>: {vip_signals_today}/36\n"
-            f"📊 <b>Free Signals Today</b>: {free_signals_today}/12\n"
-            f"🟢 <b>Status</b>: Fully Operational"
-        )
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, status_text, reply_markup=KEYBOARD_LAYOUT)
-        
     else:
-        # Check if user sent a TXID hash
-        if len(text) >= 50:
-            try:
-                conn = sqlite3.connect("vip_members.db")
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR IGNORE INTO processed_txids (txid) VALUES (?)", (text,))
+        if len(text) >= 40:  # Likely a TXID hash submission
+            txid = text.strip()
+            conn = sqlite3.connect("vip_members.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
+            if cursor.fetchone():
+                conn.close()
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!", reply_markup=KEYBOARD_LAYOUT)
+                return jsonify({"status": "ok"})
+                
+            is_valid, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
+            
+            if is_valid:
+                cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
                 conn.commit()
                 conn.close()
-                success_msg = "✅ TXID Received & Verified! VIP Access has been successfully activated."
-            except Exception:
-                success_msg = "⚠️ TXID already processed or verification pending."
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg, reply_markup=KEYBOARD_LAYOUT)
+                success_msg = (
+                    "✅ <b>PAYMENT VERIFIED SUCCESSFULLY!</b> ✅\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    "🎉 Your VIP Access has been successfully activated.\n"
+                    f"🔗 VIP Channel Invite: https://t.me/+YourVIPChannelInviteLink"
+                )
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg, reply_markup=KEYBOARD_LAYOUT)
+            else:
+                conn.close()
+                fail_msg = f"❌ <b>Verification Failed:</b> {reason}"
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg, reply_markup=KEYBOARD_LAYOUT)
         else:
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Please use the menu buttons below:", reply_markup=KEYBOARD_LAYOUT)
 
     return jsonify({"status": "ok"})
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Long/Short/Spot Capabilities & UI...")
+    log_event("🚀 Engine Active with Custom Plans & Auto-Verification...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
