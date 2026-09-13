@@ -40,7 +40,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Anti-Repeat & 24h Lock Engine.")
+        log_event("Database Initialized with Full Market Scan Engine.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -68,30 +68,38 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
+# ====================================================
+# FULL MARKET SCANNER (Fetches ALL USDT Spot Pairs)
+# ====================================================
 def get_market_data():
     valid_coins = []
     try:
         url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-        res = requests.get(url, headers=HEADERS, timeout=4.0)
+        res = requests.get(url, headers=HEADERS, timeout=5.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
-            target_map = {
-                "SOL-USDT": "SOLUSDT", "BTC-USDT": "BTCUSDT", "ETH-USDT": "ETHUSDT",
-                "PEPE-USDT": "PEPEUSDT", "DOGE-USDT": "DOGEUSDT", "NEAR-USDT": "NEARUSDT",
-                "AVAX-USDT": "AVAXUSDT", "SUI-USDT": "SUIUSDT"
-            }
             for item in data:
-                inst = item.get("instId")
-                if inst in target_map:
+                inst = item.get("instId", "")
+                # Automatically capture all pairs ending with -USDT
+                if inst.endswith("-USDT"):
+                    symbol = inst.replace("-", "") # e.g. BTCUSDT, ETHUSDT, etc.
                     price = float(item.get("last", 0))
                     open_24 = float(item.get("open24h", 0))
                     change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
                     low = float(item.get("low24h", 0))
+                    
                     if price > 0:
-                        valid_coins.append({"symbol": target_map[inst], "price": price, "change": change, "low": low})
-            if valid_coins: return valid_coins
+                        valid_coins.append({
+                            "symbol": symbol,
+                            "price": price,
+                            "change": change,
+                            "low": low
+                        })
+            if valid_coins:
+                log_event(f"🌐 Full Market Scan: Fetched {len(valid_coins)} USDT pairs from OKX.")
+                return valid_coins
     except Exception as e:
-        log_event(f"OKX Fetch Failed: {e}")
+        log_event(f"OKX Full Market Fetch Failed: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -141,7 +149,7 @@ def generate_24h_result_report():
 
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Full Market Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
@@ -155,30 +163,32 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ APIs unavailable. Retrying next cycle.")
         return
 
-    # ====================================================
-    # ANTI-REPEAT FILTER (Excludes coins active in last 24 hrs)
-    # ====================================================
-    active_symbols = set()
-    if not force_mode:
-        try:
-            conn = sqlite3.connect("vip_members.db")
-            cursor = conn.cursor()
-            twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("SELECT DISTINCT symbol FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
-            active_symbols = {row[0] for row in cursor.fetchall()}
-            conn.close()
-        except Exception as e:
-            log_event(f"Active Symbol Check Error: {e}")
+    # Fetch last signal timestamp for each coin from database
+    last_signals = {}
+    try:
+        conn = sqlite3.connect("vip_members.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, MAX(timestamp) FROM signal_history GROUP BY symbol")
+        last_signals = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+    except Exception as e:
+        log_event(f"History Fetch Error: {e}")
 
-    # Filter out coins that already have an active 24h signal
-    available_coins = [c for c in coins if c["symbol"] not in active_symbols]
+    now_time = time.time()
 
-    if not available_coins:
-        log_event("⚠️ All coins have active signals in the last 24h. Bypassing filter temporarily for rotation.")
-        available_coins = coins
+    # Assign rotation metrics to all scanned coins
+    for c in coins:
+        c["last_signal"] = last_signals.get(c["symbol"], 0)
 
-    available_coins.sort(key=lambda x: abs(x["change"]), reverse=True)
-    top_coin = available_coins[0]
+    def rotation_sort(c):
+        lt = c["last_signal"]
+        # Prioritize coins not signaled in the last 24 hours (86400s)
+        is_recent = 1 if (now_time - lt < 86400) else 0
+        # Among eligible ones, sort by oldest timestamp and highest change momentum
+        return (is_recent, lt, -abs(c["change"]))
+
+    coins.sort(key=rotation_sort)
+    top_coin = coins[0]
 
     p = top_coin["price"]
     sym = top_coin["symbol"]
@@ -205,13 +215,13 @@ def scan_and_dispatch(force_mode=False):
 
     dispatch_professional_signal(setup)
     
-    # Save Signal History to enforce 24h lock
+    # Save Signal History
     try:
         conn = sqlite3.connect("vip_members.db")
         cursor = conn.cursor()
         now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                       (sym, p, tp1, sl, time.time(), now_str))
+                       (sym, p, tp1, sl, now_time, now_str))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -267,7 +277,7 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=Fa
     except Exception: return False
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with 24h Anti-Repeat Lock...")
+    log_event("🚀 Engine Active with Full Market USDT Scan...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
