@@ -21,7 +21,7 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 
-# Updated Reply Keyboard Layout (4 Buttons)
+# Reply Keyboard Layout (4 Buttons)
 KEYBOARD_LAYOUT = {
     "keyboard": [
         [{"text": "💎 View VIP Plans"}, {"text": "💳 Get Payment Address"}],
@@ -54,7 +54,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized Successfully.")
+        log_event("Database Initialized Successfully with Auto-Expiry & Kick support.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -290,22 +290,35 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
         return res.json().get("ok", False)
     except Exception: return False
 
+def kick_telegram_user(chat_id, user_id):
+    url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/banChatMember"
+    payload = {"chat_id": chat_id, "user_id": user_id, "revoke_messages": False}
+    try:
+        res = requests.post(url, json=payload, timeout=5.0)
+        # Unban immediately so they can rejoin later using a valid link if they renew
+        unban_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/unbanChatMember"
+        requests.post(url, json={"chat_id": chat_id, "user_id": user_id}, timeout=5.0)
+        return res.json().get("ok", False)
+    except Exception:
+        return False
+
 def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
     try:
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, "API Error or Invalid TXID."
+            return False, 0, "API Error or Invalid TXID."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
-            return False, "Transaction is failed or not found on blockchain."
+            return False, 0, "Transaction is failed or not found on blockchain."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
         if not trc20_transfers:
-            return False, "No USDT TRC20 transfer found in this TXID."
+            return False, 0, "No USDT TRC20 transfer found in this TXID."
             
         valid_transfer = False
+        final_amount = 0.0
         for t in trc20_transfers:
             to_addr = t.get("to_address", "")
             symbol = t.get("symbol", "")
@@ -315,16 +328,48 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
                 symbol == "USDT" and 
                 raw_amount >= expected_amount_min):
                 valid_transfer = True
+                final_amount = raw_amount
                 break
                 
         if valid_transfer:
-            return True, "Verification Successful!"
+            return True, final_amount, "Verification Successful!"
         else:
-            return False, "Recipient address or payment amount doesn't match."
+            return False, 0, "Recipient address or payment amount doesn't match."
     except Exception as e:
-        return False, f"Verification error: {e}"
+        return False, 0, f"Verification error: {e}"
 
-# Telegram Webhook Handler with Substring Matching & Auto-Verification
+# Background Expiry & Auto-Kick Loop
+def membership_expiry_checker():
+    log_event("⏳ Membership Expiry & Auto-Kick Worker Started...")
+    while True:
+        try:
+            conn = sqlite3.connect("vip_members.db")
+            cursor = conn.cursor()
+            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Find all members whose subscription has expired
+            cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
+            expired_users = cursor.fetchall()
+            
+            for row in expired_users:
+                u_id = row[0]
+                # Kick from VIP Channel
+                success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
+                if success:
+                    log_event(f"👢 Auto-Kicked expired user ID: {u_id} from VIP Channel.")
+                    # Notify user
+                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu to regain access.")
+                
+                # Update status in db
+                cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
+                conn.commit()
+                
+            conn.close()
+        except Exception as e:
+            log_event(f"Expiry Checker Error: {e}")
+        time.sleep(3600) # Check every 1 hour
+
+# Telegram Webhook Handler with Substring Matching & Expiry Tracking
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
@@ -392,17 +437,35 @@ def telegram_webhook():
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!", reply_markup=KEYBOARD_LAYOUT)
                 return jsonify({"status": "ok"})
                 
-            is_valid, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
+            is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
             
             if is_valid:
+                # Calculate days based on amount sent
+                if paid_amount >= 27.0:
+                    days = 30
+                    plan_name = "30 Days VIP"
+                elif paid_amount >= 18.0:
+                    days = 20
+                    plan_name = "20 Days VIP"
+                else:
+                    days = 10
+                    plan_name = "10 Days VIP"
+                
+                expiry_dt = datetime.now(IST) + timedelta(days=days)
+                expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Save TXID and Member Expiry
                 cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
+                cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
                 conn.commit()
                 conn.close()
+                
                 success_msg = (
-                    "✅ <b>PAYMENT VERIFIED SUCCESSFULLY!</b> ✅\n"
+                    "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
                     "━━━━━━━━━━━━━━━━━━━━━\n"
-                    "🎉 Your VIP Access has been successfully activated.\n"
-                    f"🔗 VIP Channel Invite: https://t.me/+YourVIPChannelInviteLink"
+                    f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
+                    f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
+                    "🎉 <b>VIP Channel Invite Link:</b>\nhttps://t.me/+YourVIPChannelInviteLink"
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg, reply_markup=KEYBOARD_LAYOUT)
             else:
@@ -415,7 +478,7 @@ def telegram_webhook():
     return jsonify({"status": "ok"})
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Custom Plans & Auto-Verification...")
+    log_event("🚀 Engine Active with Complete Automation & Expiry Management...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
@@ -437,7 +500,9 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return "24h Result Report Triggered!"
 
+# Start background threads
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
