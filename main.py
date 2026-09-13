@@ -147,7 +147,7 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. MULTI-EXCHANGE LIVE PRICE & TA ENGINE
+# 4. FIXED MULTI-EXCHANGE LIVE PRICE ENGINE
 # ==========================================
 def get_live_ticker_price(symbol):
     # 1. Binance Spot API
@@ -158,21 +158,21 @@ def get_live_ticker_price(symbol):
     except Exception:
         pass
 
-    # 2. Bybit Spot API (Fallback)
-    try:
-        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3.0)
-        if res.status_code == 200:
-            result = res.json().get("result", {}).get("list", [])
-            if result:
-                return float(result[0]["lastPrice"])
-    except Exception:
-        pass
-
-    # 3. Binance Futures API (Fallback)
+    # 2. Binance Futures API (Backup)
     try:
         res = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}", timeout=3.0)
         if res.status_code == 200:
             return float(res.json()["price"])
+    except Exception:
+        pass
+
+    # 3. Bybit V5 Spot API (Fixed Payload Format)
+    try:
+        res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", timeout=3.0)
+        if res.status_code == 200:
+            result_list = res.json().get("result", {}).get("list", [])
+            if result_list and "lastPrice" in result_list[0]:
+                return float(result_list[0]["lastPrice"])
     except Exception:
         pass
 
@@ -249,7 +249,7 @@ def scan_market_for_signals():
     valid_signals = []
     used_symbols = set()
 
-    # 1. Technical Indicators Scan
+    # 1. Indicator Scan (Unique Coins Only)
     for sym in watchlist:
         res = analyze_crypto_pair(sym)
         if res and res["symbol"] not in used_symbols:
@@ -259,7 +259,7 @@ def scan_market_for_signals():
                 break
         time.sleep(0.1)
 
-    # 2. Strict Unique Backup Loop (Guarantees 2 signals with 100% Real Live Price)
+    # 2. Backup Loop with Strict Dynamic Live Price Protection
     if len(valid_signals) < 2:
         fallback_list = ["SOLUSDT", "BTCUSDT", "ETHUSDT", "BNBUSDT"]
         for sym in fallback_list:
@@ -269,10 +269,11 @@ def scan_market_for_signals():
             live_price = get_live_ticker_price(sym)
             closes, highs, lows = fetch_klines(sym, interval="1h", limit=20)
             
-            if live_price or (closes is not None):
-                final_p = live_price if live_price else closes[-1]
-                atr = np.mean(highs[-10:] - lows[-10:]) if highs is not None else final_p * 0.02
-                valid_signals.append({"symbol": sym, "price": final_p, "rsi": 54.0, "atr": atr})
+            final_price = live_price if live_price is not None else (closes[-1] if closes is not None else 0.0)
+            
+            if final_price > 0:
+                atr = np.mean(highs[-10:] - lows[-10:]) if highs is not None else final_price * 0.02
+                valid_signals.append({"symbol": sym, "price": final_price, "rsi": 54.0, "atr": atr})
                 used_symbols.add(sym)
                 if len(valid_signals) >= 2:
                     break
@@ -283,7 +284,7 @@ def scan_market_for_signals():
 # 5. DYNAMIC FORMATTING & BROADCAST ENGINE
 # ==========================================
 def format_price(val):
-    if val is None:
+    if val is None or val == 0:
         return "0.00"
     if val >= 1000:
         return f"{val:,.2f}"
@@ -293,11 +294,11 @@ def format_price(val):
         return f"{val:.6f}"
 
 def generate_and_send_signals():
-    log_event("🔍 Market Scanner Executing (Multi-Exchange Real Price Check)...")
+    log_event("🔍 Executing Market Signal Broadcast...")
     setups = scan_market_for_signals()
 
     if len(setups) < 2:
-        log_event("⚠️ Market scanner returned insufficient setups.")
+        log_event("⚠️ Could not generate 2 valid unique market signals.")
         return
 
     spot_item = setups[0]
@@ -350,7 +351,7 @@ def generate_and_send_signals():
     )
     r3 = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
 
-    log_event(f"Broadcast Complete -> Spot: {r1}, Futures: {r2}, Free: {r3}")
+    log_event(f"Signals Sent Successfully! Spot: {r1}, Futures: {r2}, Free: {r3}")
 
 # ==========================================
 # 6. TELEGRAM API & USER BOT HANDLERS
@@ -481,7 +482,7 @@ scheduler.start()
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "Production Multi-Exchange TA Engine Active"})
+    return jsonify({"status": "active", "system": "Running Live TA Engine"})
 
 @app.route('/logs')
 def get_logs():
@@ -492,13 +493,13 @@ def force_signal():
     threading.Thread(target=generate_and_send_signals, daemon=True).start()
     return "Signal Execution Triggered!"
 
-# Start Background Processing Threads
+# Background Bot Polling Threads
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
 
-# Delayed Initial Scan Thread (Fixes Render Port Startup Delay)
+# Delayed First Scan (Ensures Render Web Service Starts Instantly Without Timeout)
 def delayed_first_scan():
-    time.sleep(4)
+    time.sleep(5)
     generate_and_send_signals()
 
 threading.Thread(target=delayed_first_scan, daemon=True).start()
