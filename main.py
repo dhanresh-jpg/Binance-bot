@@ -45,7 +45,7 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
         conn.commit()
         conn.close()
-        log_event("Database Initialized with Frequency-Controlled Engine.")
+        log_event("Database Initialized with Long/Short/Spot Engine.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -151,13 +151,6 @@ def scan_and_dispatch(force_mode=False):
 
     now_time = time.time()
 
-    # Frequency Check: VIP targets 12-36/day (approx min 40 min gap unless forced)
-    # Free targets 6-12/day (approx min 2-3 hours gap unless forced)
-    if not force_mode:
-        if vip_signals_today >= 24 and (now_time - last_vip_time < 3600):
-            log_event("⏳ VIP daily frequency met for current cycle window. Waiting...")
-            return
-
     coins = get_market_data()
     if not coins:
         log_event("❌ APIs unavailable. Retrying next cycle.")
@@ -188,10 +181,15 @@ def scan_and_dispatch(force_mode=False):
     sym = top_coin["symbol"]
     chg = top_coin["change"]
     
-    if chg >= 0:
+    # Dynamic Signal Type Classification (Long / Short / Spot)
+    if chg >= 3.0:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 1.018, p * 1.035, p * 1.060, p * 0.982
+        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
+    elif chg <= -3.0:
+        signal_mode = "FUTURES SHORT"
+        leverage = "Cross 5x - 10x"
+        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
     else:
         signal_mode = "SPOT BREAKOUT BUY"
         leverage = "Spot (1x)"
@@ -210,14 +208,12 @@ def scan_and_dispatch(force_mode=False):
     r_vip = False
     r_free = False
 
-    # Dispatch to VIP (Targeting ~24 signals/day -> ~1 hr gap or based on loop execution)
     if force_mode or (vip_signals_today < 36 and (now_time - last_vip_time >= 3600)):
         r_vip = dispatch_vip_signal(setup)
         if r_vip:
             vip_signals_today += 1
             last_vip_time = now_time
             
-            # Save to history for VIP rotation tracking
             try:
                 conn = sqlite3.connect("vip_members.db")
                 cursor = conn.cursor()
@@ -229,7 +225,6 @@ def scan_and_dispatch(force_mode=False):
             except Exception as e:
                 log_event(f"History Save Error: {e}")
 
-    # Dispatch to Free (Targeting 6-12 signals/day -> ~2.5 to 3 hours gap)
     if force_mode or (free_signals_today < 12 and (now_time - last_free_time >= 10800)):
         r_free = dispatch_free_signal(setup)
         if r_free:
@@ -253,8 +248,8 @@ def dispatch_vip_signal(s):
         f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📈 <b>24h Change</b>: {s['change']}%\n"
-        f"📊 <b>RSI Indicator</b>: {s['rsi']} (Bullish Momentum)\n"
-        f"🛡️ <b>Key Support Level</b>: ${format_price(s['low'])}\n"
+        f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
+        f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
@@ -276,8 +271,8 @@ def dispatch_free_signal(s):
         f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📈 <b>24h Change</b>: {s['change']}%\n"
-        f"📊 <b>RSI Indicator</b>: {s['rsi']} (Bullish Momentum)\n"
-        f"🛡️ <b>Key Support Level</b>: ${format_price(s['low'])}\n"
+        f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
+        f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
@@ -294,11 +289,11 @@ def send_telegram_msg(bot_token, chat_id, text):
     except Exception: return False
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active with Exact Daily Frequency Rules...")
+    log_event("🚀 Engine Active with Long/Short/Spot Capabilities...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(1800) # Checks every 30 minutes to maintain proper hourly gaps
+        time.sleep(1800)
 
 @app.route('/')
 def home(): return jsonify({"status": "active"})
