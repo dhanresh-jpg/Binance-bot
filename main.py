@@ -25,7 +25,7 @@ HEADERS = {
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
-sent_cooldown = {} # Symbol cooldown tracking
+sent_cooldown = {} 
 free_signals_today = 0
 last_reset_day = datetime.now(IST).day
 
@@ -157,6 +157,13 @@ def verify_tron_txid(txid):
 # ==========================================
 def get_live_ticker_price(symbol):
     try:
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
+        if res.status_code == 200:
+            return float(res.json()["price"])
+    except Exception:
+        pass
+
+    try:
         res = requests.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}", headers=HEADERS, timeout=2.0)
         if res.status_code == 200:
             result_list = res.json().get("result", {}).get("list", [])
@@ -164,17 +171,9 @@ def get_live_ticker_price(symbol):
                 return float(result_list[0]["lastPrice"])
     except Exception:
         pass
-
-    try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
-        if res.status_code == 200:
-            return float(res.json()["price"])
-    except Exception:
-        pass
-
     return None
 
-def fetch_klines(symbol, interval="1h", limit=50):
+def fetch_klines(symbol, interval="1h", limit=40):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -218,9 +217,9 @@ def calculate_ema(prices, span):
     return ema[-1]
 
 def analyze_market_setup(symbol):
-    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=50)
-    if closes is None or len(closes) < 30:
-        return None
+    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=40)
+    if closes is None or len(closes) < 20:
+        return None, 0
 
     live_price = get_live_ticker_price(symbol)
     if live_price is None:
@@ -229,30 +228,32 @@ def analyze_market_setup(symbol):
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
     ema50 = calculate_ema(closes, 50)
-    recent_high_12 = np.max(highs[-12:-1])
+    recent_high = np.max(highs[-10:-1])
 
-    # Dynamic Analysis Strategy
-    is_breakout = live_price >= recent_high_12 * 0.995
-    is_bullish_trend = (live_price > ema20) and (ema20 > ema50)
-    is_rsi_valid = (45 <= rsi <= 72)
+    # Score-based Strategy Matching
+    score = 0
+    if live_price >= recent_high * 0.99: score += 40
+    if live_price > ema20: score += 30
+    if ema20 > ema50: score += 15
+    if 42 <= rsi <= 75: score += 15
 
-    if (is_breakout or is_bullish_trend) and is_rsi_valid:
-        atr = np.mean(highs[-14:] - lows[-14:])
-        return {
-            "symbol": symbol,
-            "price": live_price,
-            "rsi": round(rsi, 2),
-            "atr": atr,
-            "signal_type": "FUTURES" if rsi > 58 else "SPOT"
-        }
-    return None
+    atr = np.mean(highs[-10:] - lows[-10:])
+    setup = {
+        "symbol": symbol,
+        "price": live_price,
+        "rsi": round(rsi, 2),
+        "atr": atr,
+        "score": score,
+        "signal_type": "FUTURES" if rsi > 56 else "SPOT"
+    }
+    return setup, score
 
 # ==========================================
 # 5. CONTINUOUS SCANNER & SIGNAL DISPATCH
 # ==========================================
 def scan_and_dispatch(force_mode=False):
     global free_signals_today, last_reset_day
-    log_event(f"🔍 Running Market Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Real-Time Scan (Force Mode: {force_mode})...")
 
     current_day = datetime.now(IST).day
     if current_day != last_reset_day:
@@ -262,28 +263,32 @@ def scan_and_dispatch(force_mode=False):
     watchlist = [
         "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
         "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT",
-        "ADAUSDT", "DOTUSDT", "TRXUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT"
+        "ADAUSDT", "DOTUSDT", "PEPEUSDT", "WIFUSDT", "SHIBUSDT", "LTCUSDT"
     ]
 
     now_time = time.time()
-    signals_sent_in_this_run = 0
+    candidates = []
 
     for sym in watchlist:
-        # Cooldown: 4 Hours per coin (allows 12-36 signals/day across list)
-        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 14400:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 7200:
             continue
 
-        setup = analyze_market_setup(sym)
-        if setup:
-            dispatch_single_signal(setup)
-            sent_cooldown[sym] = now_time
-            signals_sent_in_this_run += 1
-            time.sleep(2)
-            if not force_mode and signals_sent_in_this_run >= 2:
-                break
+        setup, score = analyze_market_setup(sym)
+        if setup and score >= 60:
+            candidates.append(setup)
 
-    if signals_sent_in_this_run == 0:
-        log_event("Scan completed: No strong breakout match found at this moment.")
+    # Sort candidates by top strength score
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    sent_count = 0
+    for setup in candidates[:2]:
+        dispatch_single_signal(setup)
+        sent_cooldown[setup["symbol"]] = now_time
+        sent_count += 1
+        time.sleep(2)
+
+    if sent_count == 0:
+        log_event("Scan completed: Waiting for next high-accuracy breakout setup.")
 
 def continuous_market_scanner():
     log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
@@ -310,13 +315,13 @@ def dispatch_single_signal(setup):
     stype = setup["signal_type"]
 
     if stype == "SPOT":
-        tp1, tp2, sl = p + (atr * 1.5), p + (atr * 3.0), p - (atr * 1.2)
+        tp1, tp2, sl = p + (atr * 1.4), p + (atr * 2.8), p - (atr * 1.1)
         msg = (
             f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n"
             f"🪙 <b>Coin</b>: #{sym}\n"
-            f"📈 <b>Analysis</b>: EMA Trend + Dynamic Resistance Breakout\n"
+            f"📈 <b>Analysis</b>: 1H Trend Breakout + EMA Support Bounce\n"
             f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
-            f"📊 <b>RSI (1H)</b>: {rsi}\n\n"
+            f"📊 <b>RSI Strength</b>: {rsi}\n\n"
             f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
             f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
             f"⛔ <b>Stop Loss</b>: ${format_price(sl)}"
@@ -344,7 +349,7 @@ def dispatch_single_signal(setup):
             f"{msg}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-            f"💎 <b>Join VIP For Full Signals:</b> @BinanceTop10_VIPBot"
+            f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
         )
         r_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
         if r_free:
@@ -458,7 +463,7 @@ def process_bot_updates():
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({"status": "active", "system": "Real-Time TA Engine Running"})
+    return jsonify({"status": "active", "system": "Real-Time Scoring TA Engine Running"})
 
 @app.route('/logs')
 def get_logs():
