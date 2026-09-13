@@ -21,7 +21,6 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 
-# Permanent Reply Keyboard Layout (4 Buttons)
 KEYBOARD_LAYOUT = {
     "keyboard": [
         [{"text": "💎 View VIP Plans"}, {"text": "💳 Get Payment Address"}],
@@ -31,7 +30,6 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-# Daily counters & trackers
 vip_signals_today = 0
 free_signals_today = 0
 last_vip_time = 0
@@ -87,7 +85,7 @@ def get_market_data():
     valid_coins = []
     try:
         url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-        res = requests.get(url, headers=HEADERS, timeout=5.0)
+        res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for item in data:
@@ -100,9 +98,12 @@ def get_market_data():
                     low = float(item.get("low24h", 0))
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+            log_event(f"Fetched {len(valid_coins)} coins successfully from OKX.")
             if valid_coins: return valid_coins
+        else:
+            log_event(f"OKX API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"OKX Fetch Failed: {e}")
+        log_event(f"OKX Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -161,29 +162,11 @@ def scan_and_dispatch(force_mode=False):
 
     now_time = time.time()
     coins = get_market_data()
-    if not coins: return
+    if not coins:
+        log_event("❌ Scan aborted: No coins fetched from market data API.")
+        return
 
-    last_signals = {}
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT symbol, MAX(timestamp) FROM signal_history GROUP BY symbol")
-        last_signals = {row[0]: row[1] for row in cursor.fetchall()}
-        conn.close()
-    except Exception as e:
-        log_event(f"History Fetch Error: {e}")
-
-    for c in coins:
-        c["last_signal"] = last_signals.get(c["symbol"], 0)
-
-    def rotation_sort(c):
-        lt = c["last_signal"]
-        is_recent = 1 if (now_time - lt < 86400) else 0
-        return (is_recent, lt, -abs(c["change"]))
-
-    coins.sort(key=rotation_sort)
-    top_coin = coins[0]
-
+    top_coin = coins[0] # Pick first valid coin directly in force mode
     p = top_coin["price"]
     sym = top_coin["symbol"]
     chg = top_coin["change"]
@@ -211,29 +194,22 @@ def scan_and_dispatch(force_mode=False):
         "change": round(chg, 2), "low": top_coin.get("low", p * 0.95)
     }
 
-    r_vip, r_free = False, False
-
-    if force_mode or (vip_signals_today < 36 and (now_time - last_vip_time >= 3600)):
-        r_vip = dispatch_vip_signal(setup)
-        if r_vip:
-            vip_signals_today += 1
-            last_vip_time = now_time
-            try:
-                conn = sqlite3.connect("vip_members.db", timeout=10.0)
-                cursor = conn.cursor()
-                now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-                cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                               (sym, p, tp1, sl, now_time, now_str))
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                log_event(f"History Save Error: {e}")
-
-    if force_mode or (free_signals_today < 12 and (now_time - last_free_time >= 10800)):
-        r_free = dispatch_free_signal(setup)
-        if r_free:
-            free_signals_today += 1
-            last_free_time = now_time
+    log_event(f"📢 Dispatching signal for {sym} (Mode: {signal_mode})...")
+    r_vip = dispatch_vip_signal(setup)
+    r_free = dispatch_free_signal(setup)
+    
+    if r_vip or force_mode:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
+                           (sym, p, tp1, sl, now_time, now_str))
+            conn.commit()
+            conn.close()
+            log_event(f"✅ Signal history saved for {sym}")
+        except Exception as e:
+            log_event(f"History Save Error: {e}")
 
 def dispatch_vip_signal(s):
     msg = (
@@ -256,7 +232,9 @@ def dispatch_vip_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
-    return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
+    res = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
+    log_event(f"VIP Signal Dispatch Status: {res}")
+    return res
 
 def dispatch_free_signal(s):
     msg = (
@@ -280,7 +258,9 @@ def dispatch_free_signal(s):
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
         f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
     )
-    return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
+    res = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
+    log_event(f"Free Signal Dispatch Status: {res}")
+    return res
 
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=KEYBOARD_LAYOUT):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -288,8 +268,13 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=KEYBOARD_LAYOUT):
     if reply_markup: payload["reply_markup"] = reply_markup
     try:
         res = requests.post(url, json=payload, timeout=5.0)
-        return res.json().get("ok", False)
-    except Exception: return False
+        data = res.json()
+        if not data.get("ok", False):
+            log_event(f"Telegram API Error for {chat_id}: {data.get('description')}")
+        return data.get("ok", False)
+    except Exception as e:
+        log_event(f"Telegram Send Exception: {e}")
+        return False
 
 def kick_telegram_user(chat_id, user_id):
     url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/banChatMember"
@@ -364,7 +349,6 @@ def membership_expiry_checker():
         time.sleep(3600)
 
 def process_message_async(chat_id, text):
-    """Background worker to handle messages instantly without blocking the webhook"""
     try:
         if text.startswith("/start"):
             welcome_text = (
@@ -475,7 +459,6 @@ def telegram_webhook():
     text = msg.get("text", "").strip()
     
     if text:
-        # Instantly respond to Telegram with 200 OK, process everything in background thread for 0 lag!
         threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         
     return jsonify({"status": "ok"})
@@ -496,12 +479,12 @@ def get_logs(): return jsonify({"logs": system_logs})
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return "Force Scan Triggered!"
+    return jsonify({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
 
 @app.route('/force-result')
 def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
-    return "24h Result Report Triggered!"
+    return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
