@@ -306,15 +306,15 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "API Error or Invalid TXID format."
+            return False, 0, "Invalid TXID format or Blockchain API error."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
-            return False, 0, "Transaction failed or not found on blockchain."
+            return False, 0, "Transaction failed, pending, or not found on blockchain."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
         if not trc20_transfers:
-            return False, 0, "No USDT TRC20 transfer found in this TXID."
+            return False, 0, "No USDT TRC20 transfer found in this Transaction ID."
             
         valid_transfer = False
         final_amount = 0.0
@@ -333,7 +333,7 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         if valid_transfer:
             return True, final_amount, "Verification Successful!"
         else:
-            return False, 0, "Recipient address or payment amount does not match."
+            return False, 0, "Recipient address or payment amount does not match our wallet/plans."
     except Exception as e:
         return False, 0, f"Verification error: {e}"
 
@@ -353,7 +353,7 @@ def membership_expiry_checker():
                 success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
                 if success:
                     log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
-                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the menu.")
+                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu.")
                 
                 cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
                 conn.commit()
@@ -420,56 +420,60 @@ def telegram_webhook():
         send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
         
     else:
-        # Check if text looks like a TXID Hash (usually around 64 characters)
-        if len(text) >= 40:
-            txid = text.strip()
-            try:
-                conn = sqlite3.connect("vip_members.db", timeout=10.0)
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
-                if cursor.fetchone():
-                    conn.close()
-                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!")
-                    return jsonify({"status": "ok"})
-                    
-                is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
+        # Any text sent by the user (even if typed directly when keyboard was hidden) 
+        # is now automatically treated as a potential TXID/Hash for instant verification!
+        txid = text.strip()
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
+            if cursor.fetchone():
+                conn.close()
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Transaction ID (TXID) has already been used!")
+                return jsonify({"status": "ok"})
                 
-                if is_valid:
-                    if paid_amount >= 27.0:
-                        days = 30
-                        plan_name = "30 Days VIP"
-                    elif paid_amount >= 18.0:
-                        days = 20
-                        plan_name = "20 Days VIP"
-                    else:
-                        days = 10
-                        plan_name = "10 Days VIP"
-                    
-                    expiry_dt = datetime.now(IST) + timedelta(days=days)
-                    expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
-                    cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
-                    conn.commit()
-                    conn.close()
-                    
-                    success_msg = (
-                        "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
-                        "━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
-                        f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
-                        "🎉 <b>VIP Channel Invite Link:</b>\nhttps://t.me/+YourVIPChannelInviteLink"
-                    )
-                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
+            is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
+            
+            if is_valid:
+                if paid_amount >= 27.0:
+                    days = 30
+                    plan_name = "30 Days VIP"
+                elif paid_amount >= 18.0:
+                    days = 20
+                    plan_name = "20 Days VIP"
                 else:
-                    conn.close()
-                    fail_msg = f"❌ <b>Verification Failed:</b> {reason}\n\n<i>Please make sure you sent the correct TRC20 USDT transaction to our wallet address.</i>"
-                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
-            except Exception as e:
-                log_event(f"Webhook TXID Processing Error: {e}")
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "❌ An error occurred during verification. Please try again.")
-        else:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Please use the menu buttons below or send your valid transaction TXID:")
+                    days = 10
+                    plan_name = "10 Days VIP"
+                
+                expiry_dt = datetime.now(IST) + timedelta(days=days)
+                expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
+                
+                cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
+                cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
+                conn.commit()
+                conn.close()
+                
+                success_msg = (
+                    "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
+                    f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
+                    "🎉 <b>VIP Channel Invite Link:</b>\n"
+                    "https://t.me/+YourVIPChannelInviteLink"
+                )
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
+            else:
+                conn.close()
+                fail_msg = (
+                    "❌ <b>VERIFICATION FAILED</b> ❌\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Reason:</b> {reason}\n\n"
+                    "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
+                )
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
+        except Exception as e:
+            log_event(f"Webhook TXID Processing Error: {e}")
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "❌ An error occurred during verification. Please try again.")
 
     return jsonify({"status": "ok"})
 
