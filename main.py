@@ -6,7 +6,6 @@ import threading
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
@@ -26,18 +25,15 @@ HEADERS = {
 app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
-
-# Dynamic signal counters and cooling trackers
-FREE_COUNT_TODAY = 0
-VIP_COUNT_TODAY = 0
-LAST_RESET_DATE = datetime.now(IST).strftime("%Y-%m-%d")
-COIN_COOLDOWN = {}  # Format: {'BTCUSDT': timestamp}
+sent_cooldown = {}
+free_signals_today = 0
+last_reset_day = datetime.now(IST).day
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {message}"
     system_logs.append(entry)
-    if len(system_logs) > 250:
+    if len(system_logs) > 200:
         system_logs.pop(0)
     print(entry)
 
@@ -131,7 +127,7 @@ def verify_tron_txid(txid):
 
     url = f"https://api.trongrid.io/v1/accounts/{TRUST_WALLET_ADDRESS}/transactions/trc20"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=4.0)
+        res = requests.get(url, headers=HEADERS, timeout=3.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for tx in data:
@@ -157,7 +153,7 @@ def verify_tron_txid(txid):
     return False, "Transaction not found for this wallet address."
 
 # ==========================================
-# 4. MULTI-SOURCE FAST ACCURATE PRICE ENGINE
+# 4. LIVE PRICE & TECHNICAL ANALYSIS ENGINE
 # ==========================================
 def get_live_ticker_price(symbol):
     try:
@@ -176,16 +172,9 @@ def get_live_ticker_price(symbol):
     except Exception:
         pass
 
-    try:
-        res = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}", headers=HEADERS, timeout=2.0)
-        if res.status_code == 200:
-            return float(res.json()["price"])
-    except Exception:
-        pass
-
     return None
 
-def fetch_klines(symbol, interval="1h", limit=100):
+def fetch_klines(symbol, interval="1h", limit=50):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=2.5)
@@ -194,11 +183,10 @@ def fetch_klines(symbol, interval="1h", limit=100):
             closes = [float(candle[4]) for candle in data]
             highs = [float(candle[2]) for candle in data]
             lows = [float(candle[3]) for candle in data]
-            volumes = [float(candle[5]) for candle in data]
-            return np.array(closes), np.array(highs), np.array(lows), np.array(volumes)
-    except Exception as e:
+            return np.array(closes), np.array(highs), np.array(lows)
+    except Exception:
         pass
-    return None, None, None, None
+    return None, None, None
 
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
@@ -229,141 +217,142 @@ def calculate_ema(prices, span):
         ema[i] = alpha * prices[i] + (1 - alpha) * ema[i-1]
     return ema[-1]
 
-# ==========================================
-# 5. HIGH-ACCURACY BREAKOUT SCANNER
-# ==========================================
-def analyze_market_breakout(symbol):
-    closes, highs, lows, volumes = fetch_klines(symbol, interval="1h", limit=60)
-    if closes is None or len(closes) < 50:
+def analyze_crypto_breakout(symbol, ignore_cooldown=False):
+    closes, highs, lows = fetch_klines(symbol, interval="1h", limit=50)
+    if closes is None or len(closes) < 30:
         return None
 
-    current_price = get_live_ticker_price(symbol)
-    if current_price is None:
-        current_price = closes[-1]
+    live_price = get_live_ticker_price(symbol)
+    if live_price is None:
+        live_price = closes[-1]
 
     rsi = calculate_rsi(closes, 14)
     ema20 = calculate_ema(closes, 20)
     ema50 = calculate_ema(closes, 50)
+    recent_high = np.max(highs[-24:-1])
 
-    # Resistance Breakout Check (Highest high of past 24 hours)
-    resistance_24h = np.max(highs[-25:-1])
-    is_breakout = current_price >= (resistance_24h * 0.998)
+    is_breakout = live_price >= recent_high * 0.995
+    is_bullish = (live_price > ema20) and (ema20 > ema50)
+    is_good_rsi = (45 <= rsi <= 70)
 
-    # Volume Confirmation Check
-    avg_vol = np.mean(volumes[-20:-1])
-    vol_surge = volumes[-1] > (avg_vol * 1.25)
-
-    # Strict Entry Filter Conditions
-    if is_breakout and ema20 > ema50 and 48 <= rsi <= 68 and vol_surge:
+    if (is_breakout and is_bullish and is_good_rsi) or ignore_cooldown:
         atr = np.mean(highs[-14:] - lows[-14:])
         return {
             "symbol": symbol,
-            "price": current_price,
+            "price": live_price,
             "rsi": round(rsi, 2),
             "atr": atr,
-            "type": "BREAKOUT_CONFIRMED"
+            "signal_type": "FUTURES" if rsi > 58 else "SPOT"
         }
     return None
 
-def run_continuous_market_scan():
-    global FREE_COUNT_TODAY, VIP_COUNT_TODAY, LAST_RESET_DATE, COIN_COOLDOWN
-
-    # Daily Limit Reset Logic
-    today_date = datetime.now(IST).strftime("%Y-%m-%d")
-    if today_date != LAST_RESET_DATE:
-        FREE_COUNT_TODAY = 0
-        VIP_COUNT_TODAY = 0
-        LAST_RESET_DATE = today_date
-        COIN_COOLDOWN.clear()
-        log_event("Daily signal counters reset.")
-
-    if VIP_COUNT_TODAY >= 36:
-        return
-
-    # Expanded 35 Binance Top Liquid Coins List
-    crypto_universe = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT", 
-        "DOGEUSDT", "DOTUSDT", "LINKUSDT", "NEARUSDT", "FETUSDT", "SUIUSDT", "APTUSDT", 
-        "MATICUSDT", "LTCUSDT", "BCHUSDT", "ATOMUSDT", "FILUSDT", "TRXUSDT", "SHIBUSDT", 
-        "PEPEUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "RNDRUSDT", "TIAUSDT", "STXUSDT",
-        "WIFUSDT", "FLOKIUSDT", "GMXUSDT", "ICPUSDT", "SEIUSDT", "RENDERUSDT", "SUIUSDT"
-    ]
-
-    current_time = time.time()
-
-    for symbol in crypto_universe:
-        # Check 6-Hour Cooldown for repeated coin signals
-        if symbol in COIN_COOLDOWN:
-            if current_time - COIN_COOLDOWN[symbol] < 21600:
-                continue
-
-        setup = analyze_market_breakout(symbol)
-        if setup:
-            COIN_COOLDOWN[symbol] = current_time
-            dispatch_signal(setup)
-            break  # Post one solid breakout at a time
-        time.sleep(0.05)
-
 # ==========================================
-# 6. SIGNAL FORMATTING & DISPATCH ENGINE
+# 5. DISPATCH & SCANNER LOGIC
 # ==========================================
 def format_price(val):
-    if val is None or val == 0:
-        return "0.00"
-    if val >= 1000:
-        return f"{val:,.2f}"
-    elif val >= 1:
-        return f"{val:.4f}"
-    else:
-        return f"{val:.6f}"
+    if val is None or val == 0: return "0.00"
+    if val >= 1000: return f"{val:,.2f}"
+    elif val >= 1: return f"{val:.4f}"
+    else: return f"{val:.6f}"
 
-def dispatch_signal(item):
-    global FREE_COUNT_TODAY, VIP_COUNT_TODAY
+def dispatch_single_signal(setup):
+    global free_signals_today
 
-    price = item["price"]
-    atr = item["atr"]
+    p = setup["price"]
+    atr = setup["atr"]
+    sym = setup["symbol"]
+    rsi = setup["rsi"]
+    stype = setup["signal_type"]
 
-    # Conservative & Accurate TP/SL ratios
-    tp1 = price + (atr * 1.5)
-    tp2 = price + (atr * 2.8)
-    sl = price - (atr * 1.1)
-
-    futures_msg = (
-        f"⚡ <b>[VIP BREAKOUT SIGNAL]</b>\n"
-        f"🪙 <b>Coin</b>: #{item['symbol']}\n"
-        f"⚙️ <b>Leverage</b>: Cross 5x - 10x\n"
-        f"📥 <b>Entry Price</b>: ${format_price(price)}\n"
-        f"📊 <b>RSI Indicator</b>: {item['rsi']}\n"
-        f"🔥 <b>Setup</b>: 24H High Breakout + Vol Surge\n\n"
-        f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
-        f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
-        f"⛔ <b>Stop Loss</b>: ${format_price(sl)}"
-    )
-
-    # Post Signal to VIP Channel
-    res_vip = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, futures_msg, is_channel=True)
-    if res_vip:
-        VIP_COUNT_TODAY += 1
-        log_event(f"VIP Signal Sent #{VIP_COUNT_TODAY}: {item['symbol']}")
-
-    # Post max 6 Signals per day to Free Channel
-    if FREE_COUNT_TODAY < 6:
-        free_promo = (
-            f"🔥 <b>LIVE BREAKOUT SIGNAL PREVIEW</b> 🔥\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{futures_msg}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n\n"
-            f"💎 <b>Join VIP For Technical Spot & Futures Signals</b>\n"
-            f"👉 <b>VIP Bot:</b> @BinanceTop10_VIPBot"
+    if stype == "SPOT":
+        tp1, tp2, sl = p + (atr * 1.5), p + (atr * 3.2), p - (atr * 1.2)
+        msg = (
+            f"🟢 <b>[VIP SPOT BREAKOUT SIGNAL]</b>\n"
+            f"🪙 <b>Coin</b>: #{sym}\n"
+            f"📈 <b>Analysis</b>: 24H Resistance Breakout + EMA Support\n"
+            f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
+            f"📊 <b>RSI (1H)</b>: {rsi}\n\n"
+            f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
+            f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
+            f"⛔ <b>Stop Loss</b>: ${format_price(sl)}"
         )
-        res_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
-        if res_free:
-            FREE_COUNT_TODAY += 1
-            log_event(f"Free Signal Sent #{FREE_COUNT_TODAY}: {item['symbol']}")
+    else:
+        tp1, tp2, sl = p + (atr * 1.2), p + (atr * 2.5), p - (atr * 1.0)
+        msg = (
+            f"⚡ <b>[VIP FUTURES MOMENTUM LONG]</b>\n"
+            f"🪙 <b>Coin</b>: #{sym}\n"
+            f"⚙️ <b>Leverage</b>: Cross 5x - 10x\n"
+            f"📥 <b>Entry Price</b>: ${format_price(p)}\n"
+            f"📊 <b>RSI Indicator</b>: {rsi}\n\n"
+            f"🎯 <b>Target 1</b>: ${format_price(tp1)}\n"
+            f"🎯 <b>Target 2</b>: ${format_price(tp2)}\n"
+            f"⛔ <b>Stop Loss</b>: ${format_price(sl)}"
+        )
+
+    r_vip = send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg, is_channel=True)
+
+    r_free = False
+    if free_signals_today < 6:
+        free_promo = (
+            f"🔥 <b>LIVE BREAKOUT VIP SIGNAL PREVIEW</b> 🔥\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{msg}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
+            f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+        )
+        r_free = send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, free_promo, is_channel=True)
+        if r_free:
+            free_signals_today += 1
+
+    log_event(f"🎯 Live Signal Sent for #{sym} | VIP: {r_vip} | Free Count ({free_signals_today}/6): {r_free}")
+
+def run_single_scan_pass(force_mode=False):
+    log_event(f"🔍 Running Market Scan (Force Mode: {force_mode})...")
+    watchlist = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", 
+        "NEARUSDT", "FETUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT"
+    ]
+    
+    now_time = time.time()
+    signals_sent = 0
+
+    for sym in watchlist:
+        if not force_mode and sym in sent_cooldown and (now_time - sent_cooldown[sym]) < 28800:
+            continue
+
+        signal = analyze_crypto_breakout(sym, ignore_cooldown=force_mode)
+        if signal:
+            dispatch_single_signal(signal)
+            sent_cooldown[sym] = now_time
+            signals_sent += 1
+            if force_mode and signals_sent >= 1:
+                break
+        time.sleep(0.05)
+
+    if signals_sent == 0:
+        log_event("ℹ️ Scan completed: No strong breakout match found at this moment.")
+
+def continuous_market_scanner():
+    global free_signals_today, last_reset_day
+    log_event("🚀 24x7 Real-Time Market Scanning Engine Started...")
+
+    while True:
+        try:
+            current_day = datetime.now(IST).day
+            if current_day != last_reset_day:
+                free_signals_today = 0
+                last_reset_day = current_day
+
+            run_single_scan_pass(force_mode=False)
+
+        except Exception as e:
+            log_event(f"Scanner Loop Error: {e}")
+
+        time.sleep(180)
 
 # ==========================================
-# 7. TELEGRAM API & USER BOT HANDLERS
+# 6. TELEGRAM API & USER BOT HANDLERS
 # ==========================================
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None, is_channel=False):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -399,14 +388,6 @@ def get_vip_menu_keyboard():
         "resize_keyboard": True
     }
 
-def get_verify_inline_keyboard():
-    return {
-        "inline_keyboard": [
-            [{"text": "💳 Get Deposit Address", "callback_data": "btn_pay"}],
-            [{"text": "📢 Join Free Channel", "url": "https://t.me/BinanceTop10Free"}]
-        ]
-    }
-
 def process_free_bot_updates():
     offset = None
     while True:
@@ -436,15 +417,6 @@ def process_bot_updates():
             if res.status_code == 200:
                 for update in res.json().get("result", []):
                     offset = update["update_id"] + 1
-                    
-                    callback = update.get("callback_query")
-                    if callback:
-                        cb_user_id = callback["from"]["id"]
-                        if callback.get("data") == "btn_pay":
-                            pay_txt = f"💳 <b>USDT TRC-20 Address</b>:\n<code>{TRUST_WALLET_ADDRESS}</code>\n\nSend <code>/verify YOUR_TXID</code> after payment."
-                            send_telegram_msg(VIP_BOT_TOKEN, cb_user_id, pay_txt, reply_markup=get_vip_menu_keyboard())
-                        continue
-
                     msg = update.get("message", {})
                     text = msg.get("text", "").strip()
                     user_id = msg.get("from", {}).get("id")
@@ -456,7 +428,7 @@ def process_bot_updates():
 
                     elif text in ["/plans", "💎 VIP Plans"]:
                         plans_txt = "💎 <b>VIP SUBSCRIPTION PLANS</b>\n\n🔹 10 Days: 10 USDT\n🔹 20 Days: 19 USDT\n🔹 30 Days: 27 USDT"
-                        send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt, reply_markup=get_verify_inline_keyboard())
+                        send_telegram_msg(VIP_BOT_TOKEN, user_id, plans_txt)
 
                     elif text in ["/pay", "💳 Get Pay Address"]:
                         pay_txt = f"💳 <b>USDT TRC-20 Address</b>:\n<code>{TRUST_WALLET_ADDRESS}</code>\n\nSend <code>/verify YOUR_TXID</code> after payment."
@@ -464,9 +436,7 @@ def process_bot_updates():
 
                     elif text.startswith("/verify"):
                         parts = text.split()
-                        if len(parts) < 2:
-                            send_telegram_msg(VIP_BOT_TOKEN, user_id, "⚠️ Format: <code>/verify YOUR_TXID_HERE</code>")
-                        else:
+                        if len(parts) >= 2:
                             txid = parts[1].strip()
                             send_telegram_msg(VIP_BOT_TOKEN, user_id, "🔍 Verifying transaction...")
                             is_valid, result = verify_tron_txid(txid)
@@ -482,22 +452,12 @@ def process_bot_updates():
             time.sleep(2)
 
 # ==========================================
-# 8. SCHEDULER & FLASK CONTROLLER
+# 7. FLASK CONTROLLER & ROUTES
 # ==========================================
-scheduler = BackgroundScheduler()
-# 24x7 Continuous Scanning (Every 5 minutes)
-scheduler.add_job(run_continuous_market_scan, 'interval', minutes=5)
-scheduler.start()
-
 @app.route('/')
 @app.route('/ping')
 def home():
-    return jsonify({
-        "status": "active", 
-        "vip_today": VIP_COUNT_TODAY, 
-        "free_today": FREE_COUNT_TODAY, 
-        "engine": "24/7 Dynamic Breakout Scanner"
-    })
+    return jsonify({"status": "active", "system": "24x7 Real-Time Breakout Scanner Active"})
 
 @app.route('/logs')
 def get_logs():
@@ -505,17 +465,12 @@ def get_logs():
 
 @app.route('/force-signal')
 def force_signal():
-    threading.Thread(target=run_continuous_market_scan, daemon=True).start()
-    return "Market Scan Triggered Manually!"
+    threading.Thread(target=run_single_scan_pass, kwargs={"force_mode": True}, daemon=True).start()
+    return "Instant market scan triggered! Check /logs in 5 seconds."
 
 threading.Thread(target=process_free_bot_updates, daemon=True).start()
 threading.Thread(target=process_bot_updates, daemon=True).start()
-
-def delayed_first_scan():
-    time.sleep(5)
-    run_continuous_market_scan()
-
-threading.Thread(target=delayed_first_scan, daemon=True).start()
+threading.Thread(target=continuous_market_scanner, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
