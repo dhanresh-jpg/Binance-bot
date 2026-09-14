@@ -13,7 +13,6 @@ FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
 VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
-# Render app ka URL automatically detect karega ya environment variable se lega
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 
 HEADERS = {
@@ -65,7 +64,7 @@ init_db()
 
 def setup_telegram_webhooks():
     """Automatically registers webhooks with Telegram upon app startup"""
-    time.sleep(3) # Let Flask spin up completely
+    time.sleep(3)
     if not RENDER_EXTERNAL_URL:
         log_event("⚠️ RENDER_EXTERNAL_URL not found. Webhook auto-registration skipped.")
         return
@@ -341,6 +340,7 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
             payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
+        log_event(f"📤 Attempting to send message to {chat_id}...")
         res = requests.post(url, json=payload, timeout=10.0)
         data = res.json()
         if not data.get("ok", False):
