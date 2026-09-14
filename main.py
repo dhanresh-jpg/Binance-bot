@@ -13,6 +13,9 @@ FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
 VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
+# Render app ka URL automatically detect karega ya environment variable se lega
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 }
@@ -59,6 +62,27 @@ def init_db():
         log_event(f"Database Init Error: {e}")
 
 init_db()
+
+def setup_telegram_webhooks():
+    """Automatically registers webhooks with Telegram upon app startup"""
+    time.sleep(3) # Let Flask spin up completely
+    if not RENDER_EXTERNAL_URL:
+        log_event("⚠️ RENDER_EXTERNAL_URL not found. Webhook auto-registration skipped.")
+        return
+    
+    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook"
+    
+    for b_token, name in [(VIP_BOT_TOKEN, "VIP Bot"), (FREE_BOT_TOKEN, "Free Bot")]:
+        try:
+            api_url = f"https://api.telegram.org/bot{b_token}/setWebhook?url={webhook_url}"
+            res = requests.get(api_url, timeout=10.0)
+            data = res.json()
+            if data.get("ok"):
+                log_event(f"✅ Webhook successfully auto-registered for {name} -> {webhook_url}")
+            else:
+                log_event(f"❌ Webhook registration failed for {name}: {data.get('description')}")
+        except Exception as e:
+            log_event(f"🚨 Webhook registration exception for {name}: {e}")
 
 def cleanup_3day_old_data():
     try:
@@ -309,7 +333,6 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     
-    # Attach keyboard layout only for private chats (non-channel IDs)
     chat_str = str(chat_id)
     if not chat_str.startswith("-"):
         if reply_markup:
@@ -541,8 +564,10 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
+# Background threads initialization
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
+threading.Thread(target=setup_telegram_webhooks, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
