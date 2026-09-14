@@ -637,9 +637,9 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
-# Background threads initialization
+# Background threads initialization (Corrected)
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
-threading.Thread(thread_name:="continuous_market_scanner", target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
