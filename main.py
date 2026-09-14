@@ -51,7 +51,17 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
         cursor.execute('CREATE TABLE IF NOT EXISTS channel_messages (bot_type TEXT, chat_id TEXT, message_id INTEGER, created_date TEXT)')
-        cursor.execute('CREATE TABLE IF NOT EXISTS signal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, tp1 REAL, sl REAL, timestamp REAL, created_date TEXT, status TEXT DEFAULT "PENDING")')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS signal_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                            symbol TEXT, 
+                            entry_price REAL, 
+                            tp1 REAL, 
+                            tp2 REAL, 
+                            tp3 REAL, 
+                            sl REAL, 
+                            timestamp REAL, 
+                            created_date TEXT, 
+                            status TEXT DEFAULT "PENDING")''')
         conn.commit()
         conn.close()
         log_event("Database Initialized Successfully.")
@@ -172,6 +182,82 @@ def generate_24h_result_report():
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
 
+def live_signal_monitor_worker():
+    log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
+    while True:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
+            pending_signals = cursor.fetchall()
+            conn.close()
+
+            if pending_signals:
+                live_coins = get_market_data()
+                current_prices = {c["symbol"]: c["price"] for c in live_coins}
+
+                for sig in pending_signals:
+                    s_id, sym, entry, tp1, tp2, tp3, sl = sig
+                    current_p = current_prices.get(sym)
+                    if not current_p:
+                        continue
+
+                    is_long = tp1 > entry
+                    hit_status = None
+                    target_str = ""
+
+                    if is_long:
+                        if current_p >= tp3:
+                            hit_status = "TP3_HIT"
+                            target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
+                        elif current_p >= tp2:
+                            hit_status = "TP2_HIT"
+                            target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
+                        elif current_p >= tp1:
+                            hit_status = "TP1_HIT"
+                            target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
+                        elif current_p <= sl:
+                            hit_status = "SL_HIT"
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
+                    else:
+                        if current_p <= tp3:
+                            hit_status = "TP3_HIT"
+                            target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
+                        elif current_p <= tp2:
+                            hit_status = "TP2_HIT"
+                            target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
+                        elif current_p <= tp1:
+                            hit_status = "TP1_HIT"
+                            target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
+                        elif current_p >= sl:
+                            hit_status = "SL_HIT"
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
+
+                    if hit_status:
+                        update_msg = (
+                            f"🔔 <b>LIVE SIGNAL UPDATE</b> 🔔\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🪙 <b>Pair</b>: #{sym}\n"
+                            f"📥 <b>Entry</b>: ${format_price(entry)}\n"
+                            f"📊 <b>Current Price</b>: ${format_price(current_p)}\n"
+                            f"🔥 <b>Status</b>: <b>{target_str}</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"💎 <b>Join VIP For More:</b> @BinanceTop10_VIPBot"
+                        )
+                        send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
+                        send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
+
+                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
+                        conn.commit()
+                        conn.close()
+                        log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
+
+        except Exception as e:
+            log_event(f"Live Monitor Error: {e}")
+        time.sleep(300) # Check every 5 minutes
+
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
@@ -251,8 +337,8 @@ def scan_and_dispatch(force_mode=False):
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, sl, timestamp, created_date) VALUES (?, ?, ?, ?, ?, ?)", 
-                           (sym, p, tp1, sl, current_time, now_str))
+            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
+                           (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -500,11 +586,9 @@ def process_message_async(chat_id, text):
     except Exception as e:
         log_event(f"🚨 Async Processing Error: {e}")
 
-# Telegram Long Polling Worker (Replaces Webhooks completely to prevent hanging)
 def telegram_polling_worker():
     log_event("🔄 Telegram Polling Worker Started...")
     offset = 0
-    # Clear any leftover webhooks first so polling works smoothly
     try:
         requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
     except Exception:
@@ -553,9 +637,10 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
-# Background threads initialization (Polling + Scanner + Expiry Checker)
+# Background threads initialization
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
-threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(thread_name:="continuous_market_scanner", target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
 if __name__ == "__main__":
