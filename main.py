@@ -112,7 +112,6 @@ def generate_24h_result_report():
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
-        # DISTINCT symbols/signals uthao taaki duplicate signals count na ho
         cursor.execute("SELECT DISTINCT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
         records = cursor.fetchall()
         if not records:
@@ -136,13 +135,13 @@ def generate_24h_result_report():
                 
             total_signals += 1
             
-            if tp1 > entry:  # Long / Spot Buy
+            if tp1 > entry:
                 if current_p >= tp1: wins += 1
                 elif current_p <= sl: losses += 1
                 else:
                     if current_p > entry: wins += 1
                     else: losses += 1
-            else:  # Short
+            else:
                 if current_p <= tp1: wins += 1
                 elif current_p >= sl: losses += 1
                 else:
@@ -229,11 +228,9 @@ def scan_and_dispatch(force_mode=False):
         should_send_vip = True
         should_send_free = True
     else:
-        # VIP: 12 to 36 signals per day (~40 mins gap)
         if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
             should_send_vip = True
 
-        # Free: Exactly 6 signals per day (~4 hours gap = 14400 seconds)
         if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
             should_send_free = True
 
@@ -312,21 +309,24 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     
-    if str(chat_id).startswith("-"):
-        pass
-    elif reply_markup:
-        payload["reply_markup"] = reply_markup
-    else:
-        payload["reply_markup"] = KEYBOARD_LAYOUT
+    # Attach keyboard layout only for private chats (non-channel IDs)
+    chat_str = str(chat_id)
+    if not chat_str.startswith("-"):
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        else:
+            payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
         res = requests.post(url, json=payload, timeout=10.0)
         data = res.json()
         if not data.get("ok", False):
             log_event(f"❌ Telegram Send FAILED for {chat_id}: Code {res.status_code} - {data.get('description')}")
+        else:
+            log_event(f"✅ Telegram Message Sent Successfully to {chat_id}")
         return data.get("ok", False)
     except Exception as e:
-        log_event(f"🚨 Telegram Send Exception: {e}")
+        log_event(f"🚨 Telegram Send Exception Error: {e}")
         return False
 
 def kick_telegram_user(chat_id, user_id):
@@ -501,7 +501,7 @@ def process_message_async(chat_id, text):
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
     except Exception as e:
-        log_event(f"Async Processing Error: {e}")
+        log_event(f"🚨 Async Processing Error: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
@@ -512,8 +512,7 @@ def telegram_webhook():
     chat_id = msg["chat"]["id"]
     text = msg.get("text", "").strip()
     
-    log_email_or_text = f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}"
-    log_event(log_email_or_text)
+    log_event(f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}")
     if text:
         threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         
