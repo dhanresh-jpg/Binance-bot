@@ -13,8 +13,6 @@ FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
 VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
-
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 }
@@ -61,27 +59,6 @@ def init_db():
         log_event(f"Database Init Error: {e}")
 
 init_db()
-
-def setup_telegram_webhooks():
-    """Automatically registers webhooks with Telegram upon app startup"""
-    time.sleep(3)
-    if not RENDER_EXTERNAL_URL:
-        log_event("⚠️ RENDER_EXTERNAL_URL not found. Webhook auto-registration skipped.")
-        return
-    
-    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook"
-    
-    for b_token, name in [(VIP_BOT_TOKEN, "VIP Bot"), (FREE_BOT_TOKEN, "Free Bot")]:
-        try:
-            api_url = f"https://api.telegram.org/bot{b_token}/setWebhook?url={webhook_url}"
-            res = requests.get(api_url, timeout=10.0)
-            data = res.json()
-            if data.get("ok"):
-                log_event(f"✅ Webhook successfully auto-registered for {name} -> {webhook_url}")
-            else:
-                log_event(f"❌ Webhook registration failed for {name}: {data.get('description')}")
-        except Exception as e:
-            log_event(f"🚨 Webhook registration exception for {name}: {e}")
 
 def cleanup_3day_old_data():
     try:
@@ -340,13 +317,10 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
             payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
-        log_event(f"📤 Attempting to send message to {chat_id}...")
         res = requests.post(url, json=payload, timeout=10.0)
         data = res.json()
         if not data.get("ok", False):
             log_event(f"❌ Telegram Send FAILED for {chat_id}: Code {res.status_code} - {data.get('description')}")
-        else:
-            log_event(f"✅ Telegram Message Sent Successfully to {chat_id}")
         return data.get("ok", False)
     except Exception as e:
         log_event(f"🚨 Telegram Send Exception Error: {e}")
@@ -526,20 +500,35 @@ def process_message_async(chat_id, text):
     except Exception as e:
         log_event(f"🚨 Async Processing Error: {e}")
 
-@app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    data = request.get_json()
-    if not data or "message" not in data: return jsonify({"status": "ok"})
-    
-    msg = data["message"]
-    chat_id = msg["chat"]["id"]
-    text = msg.get("text", "").strip()
-    
-    log_event(f"🔔 Webhook Hit! Received text: '{text}' from chat_id: {chat_id}")
-    if text:
-        threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
-        
-    return jsonify({"status": "ok"})
+# Telegram Long Polling Worker (Replaces Webhooks completely to prevent hanging)
+def telegram_polling_worker():
+    log_event("🔄 Telegram Polling Worker Started...")
+    offset = 0
+    # Clear any leftover webhooks first so polling works smoothly
+    try:
+        requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
+    except Exception:
+        pass
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+            res = requests.get(url, timeout=35.0)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        if "message" in update:
+                            msg = update["message"]
+                            chat_id = msg["chat"]["id"]
+                            text = msg.get("text", "").strip()
+                            if text:
+                                log_event(f"🔔 Polling Received text: '{text}' from chat_id: {chat_id}")
+                                threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
+        except Exception as e:
+            log_event(f"🚨 Polling Loop Error: {e}")
+        time.sleep(1)
 
 def continuous_market_scanner():
     log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
@@ -564,10 +553,10 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
-# Background threads initialization
+# Background threads initialization (Polling + Scanner + Expiry Checker)
+threading.Thread(target=telegram_polling_worker, daemon=True).start()
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
-threading.Thread(target=setup_telegram_webhooks, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
