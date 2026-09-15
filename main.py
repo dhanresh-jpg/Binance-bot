@@ -30,6 +30,10 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
+# Tracking counters and timestamps for frequency control
+free_signals_today = 0
+vip_signals_today = 0
+last_reset_day = datetime.now(IST).day
 last_free_dispatch_time = 0
 last_vip_dispatch_time = 0
 
@@ -58,10 +62,6 @@ def init_db():
                             timestamp REAL, 
                             created_date TEXT, 
                             status TEXT DEFAULT "PENDING")''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS daily_counters (
-                            date_str TEXT PRIMARY KEY,
-                            vip_count INTEGER,
-                            free_count INTEGER)''')
         conn.commit()
         conn.close()
         log_event("Database Initialized Successfully.")
@@ -70,36 +70,6 @@ def init_db():
 
 init_db()
 
-def get_current_counts():
-    today_str = datetime.now(IST).strftime("%Y-%m-%d")
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT vip_count, free_count FROM daily_counters WHERE date_str = ?", (today_str,))
-        row = cursor.fetchone()
-        if row:
-            v_cnt, f_cnt = row
-        else:
-            cursor.execute("INSERT OR REPLACE INTO daily_counters (date_str, vip_count, free_count) VALUES (?, 0, 0)", (today_str,))
-            conn.commit()
-            v_cnt, f_cnt = 0, 0
-        conn.close()
-        return v_cnt, f_cnt
-    except Exception as e:
-        log_event(f"Get Counts Error: {e}")
-        return 0, 0
-
-def update_current_counts(vip_cnt, free_cnt):
-    today_str = datetime.now(IST).strftime("%Y-%m-%d")
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO daily_counters (date_str, vip_count, free_count) VALUES (?, ?, ?)", (today_str, vip_cnt, free_cnt))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        log_event(f"Update Counts Error: {e}")
-
 def cleanup_3day_old_data():
     try:
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
@@ -107,7 +77,6 @@ def cleanup_3day_old_data():
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
         cursor.execute("DELETE FROM channel_messages WHERE created_date < ?", (three_days_ago,))
-        cursor.execute("DELETE FROM daily_counters WHERE date_str < ?", (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"))
         deleted_count = cursor.rowcount
         conn.commit()
         conn.close()
@@ -203,7 +172,8 @@ def generate_24h_result_report():
             f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
             f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
+            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot\n"
+            f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice.</i>"
         )
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
@@ -273,7 +243,8 @@ def live_signal_monitor_worker():
                             f"📊 <b>Current Price</b>: ${format_price(current_p)}\n"
                             f"🔥 <b>Status</b>: <b>{target_str}</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"💎 <b>Join VIP For More:</b> @BinanceTop10_VIPBot"
+                            f"💎 <b>Join VIP For More:</b> @BinanceTop10_VIPBot\n"
+                            f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice.</i>"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
@@ -290,11 +261,18 @@ def live_signal_monitor_worker():
         time.sleep(300)
 
 def scan_and_dispatch(force_mode=False):
-    global last_free_dispatch_time, last_vip_dispatch_time
+    global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_time = time.time()
-    vip_signals_today, free_signals_today = get_current_counts()
+    current_day = datetime.now(IST).day
+
+    if current_day != last_reset_day:
+        vip_signals_today = 0
+        free_signals_today = 0
+        last_reset_day = current_day
+        cleanup_3day_old_data()
+        generate_24h_result_report()
 
     coins = get_market_data()
     if not coins:
@@ -357,7 +335,6 @@ def scan_and_dispatch(force_mode=False):
         log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
-        update_current_counts(vip_signals_today, free_signals_today)
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
@@ -388,9 +365,9 @@ def dispatch_vip_signal(s):
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
+        f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>\n"
+        f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
     )
-        f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" 
     return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
 def dispatch_free_signal(s):
@@ -413,9 +390,9 @@ def dispatch_free_signal(s):
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot\n"
+        f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
     )
-        f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" 
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
