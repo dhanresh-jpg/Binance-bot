@@ -30,10 +30,6 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-# Tracking counters and timestamps for frequency control
-free_signals_today = 0
-vip_signals_today = 0
-last_reset_day = datetime.now(IST).day
 last_free_dispatch_time = 0
 last_vip_dispatch_time = 0
 
@@ -62,6 +58,10 @@ def init_db():
                             timestamp REAL, 
                             created_date TEXT, 
                             status TEXT DEFAULT "PENDING")''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS daily_counters (
+                            date_str TEXT PRIMARY KEY,
+                            vip_count INTEGER,
+                            free_count INTEGER)''')
         conn.commit()
         conn.close()
         log_event("Database Initialized Successfully.")
@@ -70,6 +70,36 @@ def init_db():
 
 init_db()
 
+def get_current_counts():
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    try:
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT vip_count, free_count FROM daily_counters WHERE date_str = ?", (today_str,))
+        row = cursor.fetchone()
+        if row:
+            v_cnt, f_cnt = row
+        else:
+            cursor.execute("INSERT OR REPLACE INTO daily_counters (date_str, vip_count, free_count) VALUES (?, 0, 0)", (today_str,))
+            conn.commit()
+            v_cnt, f_cnt = 0, 0
+        conn.close()
+        return v_cnt, f_cnt
+    except Exception as e:
+        log_event(f"Get Counts Error: {e}")
+        return 0, 0
+
+def update_current_counts(vip_cnt, free_cnt):
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    try:
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO daily_counters (date_str, vip_count, free_count) VALUES (?, ?, ?)", (today_str, vip_cnt, free_cnt))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log_event(f"Update Counts Error: {e}")
+
 def cleanup_3day_old_data():
     try:
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
@@ -77,6 +107,7 @@ def cleanup_3day_old_data():
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
         cursor.execute("DELETE FROM channel_messages WHERE created_date < ?", (three_days_ago,))
+        cursor.execute("DELETE FROM daily_counters WHERE date_str < ?", (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"))
         deleted_count = cursor.rowcount
         conn.commit()
         conn.close()
@@ -256,21 +287,14 @@ def live_signal_monitor_worker():
 
         except Exception as e:
             log_event(f"Live Monitor Error: {e}")
-        time.sleep(300) # Check every 5 minutes
+        time.sleep(300)
 
 def scan_and_dispatch(force_mode=False):
-    global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
+    global last_free_dispatch_time, last_vip_dispatch_time
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_time = time.time()
-    current_day = datetime.now(IST).day
-
-    if current_day != last_reset_day:
-        vip_signals_today = 0
-        free_signals_today = 0
-        last_reset_day = current_day
-        cleanup_3day_old_data()
-        generate_24h_result_report()
+    vip_signals_today, free_signals_today = get_current_counts()
 
     coins = get_market_data()
     if not coins:
@@ -284,19 +308,18 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # --- UPDATED FUTURES STRATEGY (Safer SL & Optimized TP/SL Buffer) ---
-    if chg >= 4.0:
+    if chg >= 3.0:
         signal_mode = "FUTURES LONG"
-        leverage = "Cross 3x - 5x"  # Safely reduced leverage to prevent liquidation/quick whipsaws
-        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.085, p * 0.970  # Wider SL buffer (3%)
-    elif chg <= -4.0:
+        leverage = "Cross 5x - 10x"
+        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
+    elif chg <= -3.0:
         signal_mode = "FUTURES SHORT"
-        leverage = "Cross 3x - 5x"  # Safely reduced leverage
-        tp1, tp2, tp3, sl = p * 0.975, p * 0.950, p * 0.915, p * 1.030  # Wider SL buffer (3%)
+        leverage = "Cross 5x - 10x"
+        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
     else:
         signal_mode = "SPOT BREAKOUT BUY"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965  # Unchanged Spot Logic
+        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
@@ -334,6 +357,7 @@ def scan_and_dispatch(force_mode=False):
         log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
+        update_current_counts(vip_signals_today, free_signals_today)
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
@@ -638,7 +662,7 @@ def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
-# Background threads initialization (Corrected)
+# Background threads initialization
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
