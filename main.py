@@ -3,6 +3,7 @@ import requests
 import sqlite3
 import os
 import threading
+import random
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
@@ -107,8 +108,15 @@ def get_market_data():
                     open_24 = float(item.get("open24h", 0))
                     change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
                     low = float(item.get("low24h", 0))
+                    vol = float(item.get("vol24h", 0))
                     if price > 0:
-                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+                        valid_coins.append({
+                            "symbol": symbol, 
+                            "price": price, 
+                            "change": change, 
+                            "low": low,
+                            "vol": vol
+                        })
             if valid_coins: return valid_coins
         else:
             log_event(f"OKX API Error Status Code: {res.status_code}")
@@ -262,7 +270,7 @@ def live_signal_monitor_worker():
 
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
-    log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Advanced Market Scan & Analysis (Force Mode: {force_mode})...")
 
     current_time = time.time()
     current_day = datetime.now(IST).day
@@ -279,18 +287,39 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    coin_index = (vip_signals_today + free_signals_today) % len(coins)
-    selected_coin = coins[coin_index]
+    # 🧠 ADVANCED MARKET ANALYSIS & FILTERING LOGIC
+    # 1. Fetch recently used symbols from database so we don't repeat the same coins back-to-back
+    try:
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol FROM signal_history ORDER BY id DESC LIMIT 10")
+        recent_symbols = [row[0] for row in cursor.fetchall()]
+        conn.close()
+    except Exception:
+        recent_symbols = []
+
+    # 2. Filter out coins that were used recently and rank remaining by volume/volatility (Best Opportunities)
+    available_coins = [c for c in coins if c["symbol"] not in recent_symbols]
+    if not available_coins:
+        available_coins = coins  # Fallback if all got filtered
+
+    # Sort coins based on absolute 24h change & volume to pick the most active market opportunities
+    available_coins.sort(key=lambda x: abs(x["change"]) * (x["vol"] ** 0.1), reverse=True)
+    
+    # Pick from top active contenders with a touch of randomness to keep it organic
+    top_candidates = available_coins[:15]
+    selected_coin = random.choice(top_candidates)
     
     p = selected_coin["price"]
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    if chg >= 3.0:
+    # 3. Dynamic Strategy Analysis based on live market price action
+    if chg >= 2.5:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
         tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
-    elif chg <= -3.0:
+    elif chg <= -2.5:
         signal_mode = "FUTURES SHORT"
         leverage = "Cross 5x - 10x"
         tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
@@ -326,13 +355,13 @@ def scan_and_dispatch(force_mode=False):
         dispatch_vip_signal(setup)
         vip_signals_today += 1
         last_vip_dispatch_time = current_time
-        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
+        log_event(f"💎 VIP Analyzed Signal Sent ({vip_signals_today}/36 today) for #{sym} | Change: {chg}%")
 
     if should_send_free:
         dispatch_free_signal(setup)
         free_signals_today += 1
         last_free_dispatch_time = current_time
-        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
+        log_event(f"📢 Free Analyzed Signal Sent ({free_signals_today}/6 today) for #{sym} | Change: {chg}%")
 
     if should_send_vip or should_send_free:
         try:
@@ -431,7 +460,7 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "Transaction is still propagating on the blockchain or invalid TXID format. Please wait 1-2 minutes and try verifying again."
+            return False, 0, "Transaction is still propagating oneman blockchain or invalid TXID format. Please wait 1-2 minutes and try verifying again."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
