@@ -431,15 +431,15 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "Invalid TXID format or Blockchain API error."
+            return False, 0, "Transaction is still propagating on the blockchain or invalid TXID format. Please wait 1-2 minutes and try verifying again."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
-            return False, 0, "Transaction failed, pending, or not found on blockchain."
+            return False, 0, "Transaction is pending or failed on the blockchain. Please wait until it succeeds."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
         if not trc20_transfers:
-            return False, 0, "No USDT TRC20 transfer found in this Transaction ID."
+            return False, 0, "No USDT TRC20 transfer found in this Transaction ID yet."
             
         valid_transfer = False
         final_amount = 0.0
@@ -581,10 +581,10 @@ def process_message_async(chat_id, text):
             else:
                 conn.close()
                 fail_msg = (
-                    "❌ <b>VERIFICATION FAILED</b> ❌\n"
+                    "⏳ <b>VERIFICATION PENDING / CHECK FAILED</b> ⏳\n"
                     "━━━━━━━━━━━━━━━━━━━━━\n"
                     f"<b>Reason:</b> {reason}\n\n"
-                    "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
+                    "💡 <i>Tip: If you just made the payment, please wait 1-2 minutes and send your TXID again.</i>"
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
     except Exception as e:
