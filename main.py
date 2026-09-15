@@ -390,8 +390,7 @@ def dispatch_vip_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
-    f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" # Yeh line add karni hai
-    )
+        f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" 
     return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
 def dispatch_free_signal(s):
@@ -416,6 +415,7 @@ def dispatch_free_signal(s):
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
         f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
     )
+        f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" 
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
 def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
