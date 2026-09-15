@@ -284,18 +284,19 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    if chg >= 3.0:
+    # --- UPDATED FUTURES STRATEGY (Safer SL & Optimized TP/SL Buffer) ---
+    if chg >= 4.0:
         signal_mode = "FUTURES LONG"
-        leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
-    elif chg <= -3.0:
+        leverage = "Cross 3x - 5x"  # Safely reduced leverage to prevent liquidation/quick whipsaws
+        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.085, p * 0.970  # Wider SL buffer (3%)
+    elif chg <= -4.0:
         signal_mode = "FUTURES SHORT"
-        leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
+        leverage = "Cross 3x - 5x"  # Safely reduced leverage
+        tp1, tp2, tp3, sl = p * 0.975, p * 0.950, p * 0.915, p * 1.030  # Wider SL buffer (3%)
     else:
         signal_mode = "SPOT BREAKOUT BUY"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965
+        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965  # Unchanged Spot Logic
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
