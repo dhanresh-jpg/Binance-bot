@@ -390,6 +390,8 @@ def dispatch_vip_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
+    f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>" # Yeh line add karni hai
+    )
     return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
 def dispatch_free_signal(s):
