@@ -86,12 +86,24 @@ def cleanup_3day_old_data():
     except Exception as e:
         log_event(f"Cleanup Error: {e}")
 
+# ==================== UPDATED FORMAT PRICE (FIXED FOR MEME COINS) ====================
 def format_price(val):
-    if val is None or val == 0: return "0.00"
-    if val >= 1000: return f"{val:,.2f}"
-    elif val >= 1: return f"{val:.4f}"
-    elif val >= 0.001: return f"{val:.6f}"
-    else: return f"{val:.8f}"
+    if val is None or val == 0: 
+        return "0.00"
+    if val >= 1000: 
+        return f"{val:,.2f}"
+    elif val >= 1: 
+        return f"{val:.4f}"
+    elif val >= 0.001: 
+        return f"{val:.6f}"
+    elif val >= 0.00001: 
+        return f"{val:.8f}"
+    else:
+        # Ultra-low-priced meme coins (like BabyDogeUSDT) ke liye dynamic decimals
+        formatted = f"{val:.12f}".rstrip('0')
+        if formatted.endswith('.'):
+            formatted = formatted.rstrip('.')
+        return formatted
 
 def get_market_data():
     valid_coins = []
@@ -287,8 +299,6 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    # 🧠 ADVANCED MARKET ANALYSIS & FILTERING LOGIC
-    # 1. Fetch recently used symbols from database so we don't repeat the same coins back-to-back
     try:
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
@@ -298,15 +308,12 @@ def scan_and_dispatch(force_mode=False):
     except Exception:
         recent_symbols = []
 
-    # 2. Filter out coins that were used recently and rank remaining by volume/volatility (Best Opportunities)
     available_coins = [c for c in coins if c["symbol"] not in recent_symbols]
     if not available_coins:
-        available_coins = coins  # Fallback if all got filtered
+        available_coins = coins
 
-    # Sort coins based on absolute 24h change & volume to pick the most active market opportunities
     available_coins.sort(key=lambda x: abs(x["change"]) * (x["vol"] ** 0.1), reverse=True)
     
-    # Pick from top active contenders with a touch of randomness to keep it organic
     top_candidates = available_coins[:15]
     selected_coin = random.choice(top_candidates)
     
@@ -314,7 +321,6 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # 3. Dynamic Strategy Analysis based on live market price action
     if chg >= 2.5:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
@@ -460,7 +466,7 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "Transaction is still propagating oneman blockchain or invalid TXID format. Please wait 1-2 minutes and try verifying again."
+            return False, 0, "Transaction is still propagating on blockchain or invalid TXID format. Please wait 1-2 minutes and try verifying again."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
