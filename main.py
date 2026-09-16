@@ -91,27 +91,26 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
+    """ CoinCap API use kar rahe hain taaki Render server par 451/429 errors na aayein """
     valid_coins = []
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
+        url = "https://api.coincap.io/v2/assets?limit=50"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
-            data = res.json()
+            data = res.json().get("data", [])
             for item in data:
-                symbol = item.get("symbol", "")
-                if symbol.endswith("USDT"):
-                    price = float(item.get("lastPrice", 0))
-                    change = float(item.get("priceChangePercent", 0) or 0)
-                    low = float(item.get("lowPrice", 0) or price * 0.95)
-                    
-                    if price > 0:
-                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+                symbol = item.get("symbol", "") + "USDT"
+                price = float(item.get("priceUsd", 0) or 0)
+                change = float(item.get("changePercent24Hr", 0) or 0)
+                
+                if price > 0:
+                    valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": price * 0.95})
             if valid_coins: 
                 return valid_coins
         else:
-            log_event(f"Binance API Error Status Code: {res.status_code}")
+            log_event(f"CoinCap API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"Binance Fetch Failed Exception: {e}")
+        log_event(f"CoinCap Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -254,7 +253,7 @@ def scan_and_dispatch(force_mode=False):
 
     coins = get_market_data()
     if not coins: 
-        log_event("❌ Scan failed: No coins fetched from Binance API.")
+        log_event("❌ Scan failed: No coins fetched from CoinCap API.")
         return
 
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
@@ -495,7 +494,7 @@ def force_signal():
 def test_scan():
     try:
         scan_and_dispatch(force_mode=True)
-        return jsonify({"status": "success", "message": "Test scan executed successfully! Check logs for API responses."})
+        return jsonify({"status": "success", "message": "Test scan executed successfully! Check your Telegram channels."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
