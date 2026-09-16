@@ -104,6 +104,7 @@ def format_price(val):
             formatted = formatted.rstrip('.')
         return formatted
 
+# ==================== FIXED LIVE MARKET DATA FETCHER ====================
 def get_market_data():
     valid_coins = []
     try:
@@ -115,20 +116,25 @@ def get_market_data():
                 inst = item.get("instId", "")
                 if inst.endswith("-USDT"):
                     symbol = inst.replace("-", "")
-                    price = float(item.get("last", 0))
-                    open_24 = float(item.get("open24h", 0))
-                    change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
-                    low = float(item.get("low24h", 0))
-                    vol = float(item.get("vol24h", 0))
-                    if price > 0:
-                        valid_coins.append({
-                            "symbol": symbol, 
-                            "price": price, 
-                            "change": change, 
-                            "low": low,
-                            "vol": vol
-                        })
-            if valid_coins: return valid_coins
+                    try:
+                        price = float(item.get("last", 0))
+                        open_24 = float(item.get("open24h", 0))
+                        low = float(item.get("low24h", price * 0.95))
+                        vol = float(item.get("vol24h", 0))
+                        
+                        if price > 0 and open_24 > 0:
+                            change = ((price - open_24) / open_24) * 100
+                            valid_coins.append({
+                                "symbol": symbol, 
+                                "price": price, 
+                                "change": change, 
+                                "low": low,
+                                "vol": vol
+                            })
+                    except (ValueError, TypeError):
+                        continue
+            if valid_coins: 
+                return valid_coins
         else:
             log_event(f"OKX API Error Status Code: {res.status_code}")
     except Exception as e:
@@ -331,12 +337,12 @@ def scan_and_dispatch(force_mode=False):
         leverage = "Cross 10x"
         
         # Support-based safe SL calculation
-        sl = round(min(low * 0.992, p * 0.975), 6)
+        sl = round(min(low * 0.992, p * 0.975), 10)
         risk_amount = p - sl
         
-        tp1 = round(p + (risk_amount * 1.5), 6)
-        tp2 = round(p + (risk_amount * 2.8), 6)
-        tp3 = round(p + (risk_amount * 4.5), 6)
+        tp1 = round(p + (risk_amount * 1.5), 10)
+        tp2 = round(p + (risk_amount * 2.8), 10)
+        tp3 = round(p + (risk_amount * 4.5), 10)
     else:
         selected_coin = random.choice(bearish_candidates)
         p = selected_coin["price"]
@@ -348,12 +354,12 @@ def scan_and_dispatch(force_mode=False):
         leverage = "Cross 10x"
         
         # Resistance-based safe SL calculation
-        sl = round(max(high_est * 1.008, p * 1.025), 6)
+        sl = round(max(high_est * 1.008, p * 1.025), 10)
         risk_amount = sl - p
         
-        tp1 = round(p - (risk_amount * 1.5), 6)
-        tp2 = round(p - (risk_amount * 2.8), 6)
-        tp3 = round(p - (risk_amount * 4.5), 6)
+        tp1 = round(p - (risk_amount * 1.5), 10)
+        tp2 = round(p - (risk_amount * 2.8), 10)
+        tp3 = round(p - (risk_amount * 4.5), 10)
 
     rsi_est = round(50.0 + (chg * 0.7), 1)
     if rsi_est > 85: rsi_est = 81.2
