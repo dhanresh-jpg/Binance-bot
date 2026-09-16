@@ -91,7 +91,6 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
-    """ Binance API se fast & reliable market data fetcher (No 429 Error) """
     valid_coins = []
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
@@ -254,7 +253,9 @@ def scan_and_dispatch(force_mode=False):
         generate_24h_result_report()
 
     coins = get_market_data()
-    if not coins: return
+    if not coins: 
+        log_event("❌ Scan failed: No coins fetched from Binance API.")
+        return
 
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
     selected_coin = coins[coin_index]
@@ -317,6 +318,7 @@ def scan_and_dispatch(force_mode=False):
                 cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
                                (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
                 conn.commit()
+            log_event(f"✅ Signal Dispatched & Saved for {sym}")
         except Exception as e:
             log_event(f"History Save Error: {e}")
 
@@ -374,7 +376,8 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     try:
         res = requests.post(url, json=payload, timeout=10.0)
         return res.json().get("ok", False)
-    except Exception:
+    except Exception as e:
+        log_event(f"Telegram Send Error: {e}")
         return False
 
 def kick_telegram_user(chat_id, user_id):
@@ -443,7 +446,7 @@ def process_message_async(chat_id, text):
             else:
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"❌ <b>Verification Failed:</b> {reason}")
     except Exception as e:
-            log_event(f"Msg Processing Error: {e}")
+        log_event(f"Msg Processing Error: {e}")
 
 def telegram_polling_worker():
     offset = 0
@@ -484,6 +487,14 @@ def get_logs(): return jsonify({"logs": system_logs})
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
     return jsonify({"status": "success", "message": "High-Accuracy Force Scan Triggered!"})
+
+@app.route('/test-scan')
+def test_scan():
+    try:
+        scan_and_dispatch(force_mode=True)
+        return jsonify({"status": "success", "message": "Test scan executed successfully! Check your Telegram channels."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/force-result')
 def force_result():
