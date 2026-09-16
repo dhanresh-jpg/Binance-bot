@@ -271,7 +271,7 @@ def live_signal_monitor_worker():
  
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
-    log_event(f"🔍 Running Support/Resistance Based Market Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Advanced Spot & Futures S/R Market Scan (Force Mode: {force_mode})...")
 
     current_time = time.time()
     current_day = datetime.now(IST).day
@@ -311,36 +311,35 @@ def scan_and_dispatch(force_mode=False):
     sup = selected_coin["low"]   # 24h Support level
     res = selected_coin["high"]  # 24h Resistance level
     
-    # ADVANCED SUPPORT & RESISTANCE STRATEGY LOGIC
-    # Agar price support ke paas hai toh Long/Buy, agar resistance ke paas hai toh Short/Sell
-    distance_from_support = ((p - sup) / sup) * 100
-    
-    if chg >= 1.0 or distance_from_support < 3.5:
-        signal_mode = "FUTURES LONG (S/R Bounce)"
-        leverage = "Cross 3x - 5x"
-        # Support-backed levels
-        tp1 = p * 1.022
-        tp2 = p * 1.045
-        tp3 = p * 1.075
-        sl = sup * 0.985  # Stop loss strictly below 24h support with safety buffer
-    elif chg <= -1.0:
-        signal_mode = "FUTURES SHORT (Resistance Rejection)"
-        leverage = "Cross 3x - 5x"
-        tp1 = p * 0.978
-        tp2 = p * 0.955
-        tp3 = p * 0.925
-        sl = res * 1.015  # Stop loss strictly above 24h resistance with safety buffer
-    else:
-        signal_mode = "SPOT BREAKOUT BUY"
+    # MIXED STRATEGY: Alternating or selecting Smart Spot vs Futures based on market condition
+    signal_choice_pool = ["SPOT BUY", "FUTURES LONG", "FUTURES SHORT"]
+    chosen_type = random.choice(signal_choice_pool)
+
+    if chosen_type == "SPOT BUY":
+        signal_mode = "SPOT DCA / ACCUMULATION"
         leverage = "Spot (1x)"
         tp1 = p * 1.025
-        tp2 = p * 1.050
-        tp3 = p * 1.080
-        sl = sup * 0.980
+        tp2 = p * 1.055
+        tp3 = p * 1.090
+        sl = sup * 0.975  # Safe stop loss below support for spot holding
+    elif chosen_type == "FUTURES LONG":
+        signal_mode = "FUTURES LONG (S/R Bounce)"
+        leverage = "Cross 3x - 5x"
+        tp1 = p * 1.020
+        tp2 = p * 1.042
+        tp3 = p * 1.070
+        sl = sup * 0.982  # Safe SL buffer
+    else:
+        signal_mode = "FUTURES SHORT (Resistance Rejection)"
+        leverage = "Cross 3x - 5x"
+        tp1 = p * 0.980
+        tp2 = p * 0.958
+        tp3 = p * 0.930
+        sl = res * 1.018  # Safe SL buffer
 
-    rsi_est = round(50.0 + (chg * 0.6), 1)
-    if rsi_est > 78: rsi_est = 74.0
-    elif rsi_est < 22: rsi_est = 26.0
+    rsi_est = round(50.0 + (chg * 0.5), 1)
+    if rsi_est > 78: rsi_est = 73.5
+    elif rsi_est < 22: rsi_est = 26.5
 
     setup = {
         "symbol": sym, "price": p, "mode": signal_mode, "leverage": leverage,
@@ -364,13 +363,13 @@ def scan_and_dispatch(force_mode=False):
         dispatch_vip_signal(setup)
         vip_signals_today += 1
         last_vip_dispatch_time = current_time
-        log_event(f"💎 S/R VIP Signal Sent ({vip_signals_today}/36 today) for #{sym} | Support: {sup} | Resistance: {res}")
+        log_event(f"💎 VIP Signal Sent ({signal_mode}) for #{sym} | Support: {sup} | Resistance: {res}")
 
     if should_send_free:
         dispatch_free_signal(setup)
         free_signals_today += 1
         last_free_dispatch_time = current_time
-        log_event(f"📢 S/R Free Signal Sent ({free_signals_today}/6 today) for #{sym}")
+        log_event(f"📢 Free Signal Sent ({signal_mode}) for #{sym}")
 
     if should_send_vip or should_send_free:
         try:
@@ -386,11 +385,11 @@ def scan_and_dispatch(force_mode=False):
  
 def dispatch_vip_signal(s):
     msg = (
-        f"🚨 <b>BINANCE VIP S/R TRADE SIGNAL</b> 🚨\n"
+        f"🚨 <b>BINANCE VIP TRADE SIGNAL</b> 🚨\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Pair</b>: #{s['symbol']}\n"
-        f"📊 <b>Strategy</b>: <code>{s['mode']}</code>\n"
-        f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
+        f"📊 <b>Strategy / Type</b>: <code>{s['mode']}</code>\n"
+        f"⚙️ <b>Market Mode</b>: {s['leverage']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
         f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
@@ -403,17 +402,17 @@ def dispatch_vip_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}% | <b>RSI</b>: {s['rsi']}\n"
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ <i>Use 2-3% of total wallet balance & recommended leverage. DYOR!</i>"
+        f"⚠️ <i>Manage risk properly. DYOR!</i>"
     )
     return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
  
 def dispatch_free_signal(s):
     msg = (
-        f"🔥 <b>REAL-TIME S/R SIGNAL PREVIEW</b> 🔥\n"
+        f"🔥 <b>REAL-TIME SIGNAL PREVIEW</b> 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Pair</b>: #{s['symbol']}\n"
-        f"📊 <b>Strategy</b>: <code>{s['mode']}</code>\n"
-        f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
+        f"📊 <b>Strategy / Type</b>: <code>{s['mode']}</code>\n"
+        f"⚙️ <b>Market Mode</b>: {s['leverage']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
         f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
@@ -519,13 +518,13 @@ def process_message_async(chat_id, text):
         if text.startswith("/start"):
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\nUse the menu buttons below:")
         elif "View VIP Plans" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "💎 <b>VIP PLANS:</b> 10 Days ($10) | 20 Days ($19) | 30 Days ($28)")
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "💎 <b>VIP PLANS:</b>\n• 10 Days: $10 USDT\n• 20 Days: $19 USDT\n• 30 Days: $28 USDT")
         elif "Get Payment Address" in text:
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"💳 <b>USDT TRC20 Address:</b>\n<code>{TRUST_WALLET_ADDRESS}</code>")
         elif "Verify Payment" in text:
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, "🔍 Please send your **Transaction ID (TXID)** right here.")
         elif "How to Verify TXID" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Send USDT, copy TXID and paste it here.")
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Send USDT via TRC20, copy TXID and paste it here.")
         else:
             txid = text.strip()
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
@@ -556,25 +555,26 @@ def telegram_polling_worker():
     try: requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
     except Exception: pass
 
-    while True:
-        try:
-            res = requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30", timeout=35.0)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        if "message" in update:
-                            chat_id = update["message"]["chat"]["id"]
-                            text = update["message"].get("text", "").strip()
-                            if text:
-                                threading.Thread(target=process_process_async if 'process_process_async' in globals() else process_message_async, args=(chat_id, text), daemon=True).start()
-        except Exception as e:
-            log_event(f"Polling Error: {e}")
-        time.sleep(1)
- 
+str_func = "process_message_async"
+while True:
+    try:
+        res = requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30", timeout=35.0)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("ok"):
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    if "message" in update:
+                        chat_id = update["message"]["chat"]["id"]
+                        text = update["message"].get("text", "").strip()
+                        if text:
+                            threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
+    except Exception as e:
+        log_event(f"Polling Error: {e}")
+    time.sleep(1)
+
 def continuous_market_scanner():
-    log_event("🚀 Support/Resistance Engine Active...")
+    log_event("🚀 Advanced Spot & Futures S/R Engine Active...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
@@ -589,14 +589,14 @@ def get_logs(): return jsonify({"logs": system_logs})
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return jsonify({"status": "success", "message": "Force S/R Signal Triggered!"})
+    return jsonify({"status": "success", "message": "Force Signal Triggered!"})
  
 @app.route('/force-result')
 def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
     return jsonify({"status": "success", "message": "Result Report Triggered!"})
  
-# Threads initialization
+# Background Threads Initialization
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
