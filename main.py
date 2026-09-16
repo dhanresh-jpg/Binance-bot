@@ -98,31 +98,30 @@ def format_price(val):
 def get_market_data():
     valid_coins = []
     try:
-        # Switched to Binance Public Spot API
-        url = "https://api.binance.com/api/v3/ticker/24hr"
+        # Switched to CoinGecko Public Markets API (Bypasses server/IP blocks like 451)
+        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=100&page=1&sparkline=false"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
-                symbol = item.get("symbol", "")
-                if symbol.endswith("USDT"):
-                    price = float(item.get("lastPrice", 0))
-                    change = float(item.get("priceChangePercent", 0))
-                    low = float(item.get("lowPrice", 0))
-                    vol = float(item.get("volume", 0))
-                    if price > 0:
-                        valid_coins.append({
-                            "symbol": symbol, 
-                            "price": price, 
-                            "change": change, 
-                            "low": low,
-                            "vol": vol
-                        })
+                symbol = (item.get("symbol", "") + "USDT").upper()
+                price = float(item.get("current_price", 0) or 0)
+                change = float(item.get("price_change_percentage_24h", 0) or 0)
+                low = float(item.get("low_24h", 0) or (price * 0.95))
+                vol = float(item.get("total_volume", 0) or 0)
+                if price > 0:
+                    valid_coins.append({
+                        "symbol": symbol, 
+                        "price": price, 
+                        "change": change, 
+                        "low": low,
+                        "vol": vol
+                    })
             if valid_coins: return valid_coins
         else:
-            log_event(f"Binance API Error Status Code: {res.status_code}")
+            log_event(f"CoinGecko API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"Binance Fetch Failed Exception: {e}")
+        log_event(f"CoinGecko Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
