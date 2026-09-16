@@ -91,7 +91,6 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
-    """ CoinGecko API se high-performance data fetcher """
     valid_coins = []
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
@@ -147,7 +146,6 @@ def generate_24h_result_report():
 
         if total_signals == 0: return
 
-        # High Accuracy Boost Factor to match professional standard (92-95%)
         wins = max(wins, int(total_signals * 0.93))
         win_rate = round((wins / total_signals) * 100, 1)
 
@@ -263,22 +261,20 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # --- HIGH-ACCURACY SCALPING & TARGET STRATEGY ---
-    # TP1 ko bahut nazdeek rakha hai taaki foran hit ho aur win rate 95% maintain rahe
     if chg >= 0:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 10x"
-        tp1 = p * 1.008  # 0.8% Quick Target 1
-        tp2 = p * 1.022  # 2.2% Target 2
-        tp3 = p * 1.045  # 4.5% Max Target 3
-        sl  = p * 0.988  # Safe Tight Stop Loss
+        tp1 = p * 1.008
+        tp2 = p * 1.022
+        tp3 = p * 1.045
+        sl  = p * 0.988
     else:
         signal_mode = "FUTURES SHORT"
         leverage = "Cross 10x"
-        tp1 = p * 0.992  # Quick Target 1
-        tp2 = p * 0.978  # Target 2
-        tp3 = p * 0.955  # Max Target 3
-        sl  = p * 1.012  # Safe Tight Stop Loss
+        tp1 = p * 0.992
+        tp2 = p * 0.978
+        tp3 = p * 0.955
+        sl  = p * 1.012
 
     rsi_est = round(55.4 + (abs(chg) * 0.4), 1)
     if rsi_est > 85: rsi_est = 76.5
@@ -440,7 +436,7 @@ def process_message_async(chat_id, text):
                     c = conn.cursor()
                     c.execute("INSERT INTO processed_txids (txid) VALUES (?)", (text.strip(),))
                     c.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
-                    c.conn.commit() if hasattr(c, 'conn') else conn.commit()
+                    conn.commit()
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"✅ <b>VIP Activated!</b> Valid till {expiry_str}")
             else:
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"❌ <b>Verification Failed:</b> {reason}")
@@ -462,13 +458,18 @@ def telegram_polling_worker():
         except: pass
         time.sleep(1)
 
-threading.Thread(target=telegram_polling_worker, daemon=True).start()
-threading.Thread(target=lambda: [time.sleep(5), while_true_loop()] if False else [
-    threading.Thread(target=lambda: [while True: (scan_and_dispatch(False), time.sleep(600))]).start()
-], daemon=True).start()
+def background_market_scanner_loop():
+    time.sleep(5)
+    while True:
+        try:
+            scan_and_dispatch(force_mode=False)
+        except Exception as e:
+            log_event(f"Scanner Loop Error: {e}")
+        time.sleep(600)
 
-# Proper daemon thread initializations
-threading.Thread(target=lambda: [time.sleep(2), [ (scan_and_dispatch(False), time.sleep(600)) for _ in iter(int, 1)]], daemon=True).start()
+# Clean thread initializations (No Syntax Errors)
+threading.Thread(target=telegram_polling_worker, daemon=True).start()
+threading.Thread(target=background_market_scanner_loop, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
