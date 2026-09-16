@@ -551,10 +551,34 @@ def free_webhook():
                 else:
                     send_telegram_msg(FREE_BOT_TOKEN, chat_id, f"❌ Verification Failed: {msg_desc}")
     except Exception as e:
-        log_event(f"Webhook Error: {e}")
+        log_event(f"Free Webhook Error: {e}")
     return jsonify({"status": "ok"}), 200
+
+@app.route(f'/{VIP_BOT_TOKEN}', methods=['POST'])
+def vip_webhook():
+    try:
+        data = request.get_json()
+        if data and "message" in data:
+            message = data["message"]
+            chat_id = message["chat"]["id"]
+            text = message.get("text", "")
+            
+            if text.startswith("/start"):
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "Welcome to Binance Top 10 VIP Bot! You will receive exclusive signals here.")
+    except Exception as e:
+        log_event(f"VIP Webhook Error: {e}")
+    return jsonify({"status": "ok"}), 200
+
+def background_scanner():
+    while True:
+        try:
+            scan_and_dispatch(force_mode=False)
+        except Exception as e:
+            log_event(f"Background Scanner Error: {e}")
+        time.sleep(3600) # Runs market scan every 1 hour
 
 if __name__ == "__main__":
     threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
+    threading.Thread(target=background_scanner, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
