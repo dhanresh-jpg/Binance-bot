@@ -30,7 +30,6 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-# Tracking counters and timestamps for frequency control
 free_signals_today = 0
 vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
@@ -92,28 +91,31 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
+    """ Binance API se data fetch karega taaki sirf wahi coins aayein jo Binance par listed hon """
     valid_coins = []
     try:
-        url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
+        # Binance 24hr ticker price change endpoint
+        url = "https://api.binance.com/api/v3/ticker/24hr"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
-            data = res.json().get("data", [])
+            data = res.json()
             for item in data:
-                inst = item.get("instId", "")
-                if inst.endswith("-USDT"):
-                    symbol = inst.replace("-", "")
-                    price = float(item.get("last", 0))
-                    open_24 = float(item.get("open24h", 0))
-                    change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
-                    low = float(item.get("low24h", 0))
+                symbol = item.get("symbol", "")
+                # Sirf USDT pairs ko filter karein
+                if symbol.endswith("USDT"):
+                    price = float(item.get("lastPrice", 0))
+                    open_24 = float(item.get("openPrice", 0))
+                    change = float(item.get("priceChangePercent", 0))
+                    low = float(item.get("lowPrice", 0))
+                    
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins: 
                 return valid_coins
         else:
-            log_event(f"OKX API Error Status Code: {res.status_code}")
+            log_event(f"Binance API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"OKX Fetch Failed Exception: {e}")
+        log_event(f"Binance Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -269,7 +271,7 @@ def scan_and_dispatch(force_mode=False):
 
     coins = get_market_data()
     if not coins:
-        log_event("❌ Scan aborted: No coins fetched from market data API.")
+        log_event("❌ Scan aborted: No coins fetched from Binance API.")
         return
 
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
@@ -602,7 +604,7 @@ def telegram_polling_worker():
         time.sleep(1)
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
+    log_event("🚀 Engine Active (Binance API Source)...")
     while True:
         try: 
             scan_and_dispatch(force_mode=False)
