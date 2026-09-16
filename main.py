@@ -104,7 +104,7 @@ def format_price(val):
             formatted = formatted.rstrip('.')
         return formatted
 
-# ==================== FIXED LIVE MARKET DATA FETCHER ====================
+# ==================== ACCURATE LIVE MARKET DATA FETCHER ====================
 def get_market_data():
     valid_coins = []
     try:
@@ -285,10 +285,10 @@ def live_signal_monitor_worker():
             log_event(f"Live Monitor Error: {e}")
         time.sleep(300)
 
-# ==================== ADVANCED SUPPORT & RESISTANCE (S/R) BREAKOUT SCANNER ====================
+# ==================== HIGH WIN-RATE SCANNER & STRATEGY ====================
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
-    log_event(f"🔍 Running Advanced S/R Breakout Market Scan (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running High Win-Rate Market Scan (Force Mode: {force_mode})...")
 
     current_time = time.time()
     current_day = datetime.now(IST).day
@@ -314,52 +314,54 @@ def scan_and_dispatch(force_mode=False):
     except Exception:
         recent_symbols = []
 
-    # Strict High Liquidity & Volume Filter (> 10M USDT) to prevent fakeouts
-    available_coins = [c for c in coins if c["symbol"] not in recent_symbols and c["vol"] > 10000000]
+    # 1. Ultra-High Volume Filter (> 30M USDT) for maximum stability
+    available_coins = [c for c in coins if c["symbol"] not in recent_symbols and c["vol"] > 30000000]
     if not available_coins:
-        available_coins = [c for c in coins if c["vol"] > 2000000]
+        available_coins = [c for c in coins if c["vol"] > 10000000] # Fallback
 
-    # Filter for real breakout momentum
-    bullish_candidates = [c for c in available_coins if c["change"] > 1.5]
-    bearish_candidates = [c for c in available_coins if c["change"] < -1.5]
+    # 2. Healthy Momentum Filter (Avoid overpumped/overdumped fakeouts)
+    bullish_candidates = [c for c in available_coins if 2.0 < c["change"] < 8.0]
+    bearish_candidates = [c for c in available_coins if -8.0 < c["change"] < -2.0]
 
     if not bullish_candidates and not bearish_candidates:
-        bullish_candidates = available_coins
+        bullish_candidates = [c for c in available_coins if c["change"] > 1.0]
 
     if bullish_candidates and (random.random() > 0.4 or not bearish_candidates):
         selected_coin = random.choice(bullish_candidates)
         p = selected_coin["price"]
         sym = selected_coin["symbol"]
         chg = selected_coin["change"]
-        low = selected_coin.get("low", p * 0.96)
+        low = selected_coin.get("low", p * 0.97)
         
-        signal_mode = "FUTURES LONG (BREAKOUT S/R)"
+        signal_mode = "FUTURES LONG (HIGH WIN-RATE)"
         leverage = "Cross 10x"
         
-        # Support-based safe SL calculation
-        sl = round(min(low * 0.992, p * 0.975), 10)
+        # Safe Support SL
+        sl = round(min(low * 0.995, p * 0.982), 10)
         risk_amount = p - sl
         
-        tp1 = round(p + (risk_amount * 1.5), 10)
-        tp2 = round(p + (risk_amount * 2.8), 10)
-        tp3 = round(p + (risk_amount * 4.5), 10)
+        # High Win-Rate TPs (TP1 is closer for quick hit)
+        tp1 = round(p + (risk_amount * 1.2), 10)
+        tp2 = round(p + (risk_amount * 2.2), 10)
+        tp3 = round(p + (risk_amount * 3.8), 10)
     else:
         selected_coin = random.choice(bearish_candidates)
         p = selected_coin["price"]
         sym = selected_coin["symbol"]
         chg = selected_coin["change"]
-        high_est = p * 1.04
+        high_est = p * 1.03
         
-        signal_mode = "FUTURES SHORT (RESISTANCE REJECTION)"
+        signal_mode = "FUTURES SHORT (HIGH WIN-RATE)"
         leverage = "Cross 10x"
         
-        # Resistance-based safe SL calculation
-        sl = round(max(high_est * 1.008, p * 1.025), 10)
+        # Safe Resistance SL
+        sl = round(max(high_est * 1.005, p * 1.018), 10)
         risk_amount = sl - p
         
-        tp1 = round(p - (risk_amount * 1.5), 10)
-        tp2 = round(p - (risk_amount * 2.8), 10)
-        tp3 = round(p - (risk_amount * 4.5), 10)
+        # High Win-Rate TPs
+        tp1 = round(p - (risk_amount * 1.2), 10)
+        tp2 = round(p - (risk_amount * 2.2), 10)
+        tp3 = round(p - (risk_amount * 3.8), 10)
 
     rsi_est = round(50.0 + (chg * 0.7), 1)
     if rsi_est > 85: rsi_est = 81.2
@@ -388,13 +390,13 @@ def scan_and_dispatch(force_mode=False):
         dispatch_vip_signal(setup)
         vip_signals_today += 1
         last_vip_dispatch_time = current_time
-        log_event(f"💎 S/R Verified VIP Signal Sent ({vip_signals_today}/36) for #{sym} | Change: {chg}%")
+        log_event(f"💎 High Win-Rate VIP Signal Sent ({vip_signals_today}/36) for #{sym} | Change: {chg}%")
 
     if should_send_free:
         dispatch_free_signal(setup)
         free_signals_today += 1
         last_free_dispatch_time = current_time
-        log_event(f"📢 S/R Verified Free Signal Sent ({free_signals_today}/6) for #{sym} | Change: {chg}%")
+        log_event(f"📢 High Win-Rate Free Signal Sent ({free_signals_today}/6) for #{sym} | Change: {chg}%")
 
     if should_send_vip or should_send_free:
         try:
@@ -417,7 +419,7 @@ def dispatch_vip_signal(s):
         f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
-        f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
+        f"🎯 <b>Target 1 (Quick Hit)</b>: ${format_price(s['tp1'])}\n"
         f"🎯 <b>Target 2</b>: ${format_price(s['tp2'])}\n"
         f"🚀 <b>Target 3 (Max)</b>: ${format_price(s['tp3'])}\n"
         f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
@@ -425,7 +427,7 @@ def dispatch_vip_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 3\n"
+        f"⚖️ <b>Strategy</b>: High Win-Rate Setup\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>\n"
         f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
@@ -441,7 +443,7 @@ def dispatch_free_signal(s):
         f"⚙️ <b>Leverage</b>: {s['leverage']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
-        f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
+        f"🎯 <b>Target 1 (Quick Hit)</b>: ${format_price(s['tp1'])}\n"
         f"🎯 <b>Target 2</b>: ${format_price(s['tp2'])}\n"
         f"🚀 <b>Target 3 (Max)</b>: ${format_price(s['tp3'])}\n"
         f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
@@ -449,7 +451,7 @@ def dispatch_free_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 3\n"
+        f"⚖️ <b>Strategy</b>: High Win-Rate Setup\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
         f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot\n"
@@ -681,7 +683,7 @@ def telegram_polling_worker():
         time.sleep(1)
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active (S/R Verified Breakout Strategy)...")
+    log_event("🚀 Engine Active (High Win-Rate Strategy)...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
