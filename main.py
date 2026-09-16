@@ -91,26 +91,28 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
+    """ Binance API se fast & reliable market data fetcher (No 429 Error) """
     valid_coins = []
     try:
-        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
+        url = "https://api.binance.com/api/v3/ticker/24hr"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
-                symbol = item.get("symbol", "").upper() + "USDT"
-                price = float(item.get("current_price", 0))
-                change = float(item.get("price_change_percentage_24h", 0) or 0)
-                low = float(item.get("low_24h", 0) or price * 0.95)
-                
-                if price > 0:
-                    valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+                symbol = item.get("symbol", "")
+                if symbol.endswith("USDT"):
+                    price = float(item.get("lastPrice", 0))
+                    change = float(item.get("priceChangePercent", 0) or 0)
+                    low = float(item.get("lowPrice", 0) or price * 0.95)
+                    
+                    if price > 0:
+                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins: 
                 return valid_coins
         else:
-            log_event(f"CoinGecko API Error Status Code: {res.status_code}")
+            log_event(f"Binance API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"CoinGecko Fetch Failed Exception: {e}")
+        log_event(f"Binance Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -441,7 +443,7 @@ def process_message_async(chat_id, text):
             else:
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"❌ <b>Verification Failed:</b> {reason}")
     except Exception as e:
-        log_event(f"Msg Processing Error: {e}")
+            log_event(f"Msg Processing Error: {e}")
 
 def telegram_polling_worker():
     offset = 0
@@ -467,7 +469,6 @@ def background_market_scanner_loop():
             log_event(f"Scanner Loop Error: {e}")
         time.sleep(600)
 
-# Clean thread initializations (No Syntax Errors)
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
 threading.Thread(target=background_market_scanner_loop, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
