@@ -41,29 +41,29 @@ def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {message}"
     system_logs.append(entry)
-    if len(system_logs) > 200: system_logs.pop(0)
+    if len(system_logs) > 200: 
+        system_logs.pop(0)
     print(entry)
 
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
-        cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
-        cursor.execute('CREATE TABLE IF NOT EXISTS channel_messages (bot_type TEXT, chat_id TEXT, message_id INTEGER, created_date TEXT)')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS signal_history (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                            symbol TEXT, 
-                            entry_price REAL, 
-                            tp1 REAL, 
-                            tp2 REAL, 
-                            tp3 REAL, 
-                            sl REAL, 
-                            timestamp REAL, 
-                            created_date TEXT, 
-                            status TEXT DEFAULT "PENDING")''')
-        conn.commit()
-        conn.close()
+        with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
+            cursor.execute('CREATE TABLE IF NOT EXISTS channel_messages (bot_type TEXT, chat_id TEXT, message_id INTEGER, created_date TEXT)')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS signal_history (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                                symbol TEXT, 
+                                entry_price REAL, 
+                                tp1 REAL, 
+                                tp2 REAL, 
+                                tp3 REAL, 
+                                sl REAL, 
+                                timestamp REAL, 
+                                created_date TEXT, 
+                                status TEXT DEFAULT "PENDING")''')
+            conn.commit()
         log_event("Database Initialized Successfully.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
@@ -72,14 +72,13 @@ init_db()
 
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
-        cursor.execute("DELETE FROM channel_messages WHERE created_date < ?", (three_days_ago,))
-        deleted_count = cursor.rowcount
-        conn.commit()
-        conn.close()
+        with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+            cursor = conn.cursor()
+            three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
+            cursor.execute("DELETE FROM channel_messages WHERE created_date < ?", (three_days_ago,))
+            deleted_count = cursor.rowcount
+            conn.commit()
         if deleted_count > 0:
             log_event(f"🧹 Cleaned {deleted_count} old records.")
     except Exception as e:
@@ -109,7 +108,8 @@ def get_market_data():
                     low = float(item.get("low24h", 0))
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
-            if valid_coins: return valid_coins
+            if valid_coins: 
+                return valid_coins
         else:
             log_event(f"OKX API Error Status Code: {res.status_code}")
     except Exception as e:
@@ -118,14 +118,13 @@ def get_market_data():
 
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        cursor.execute("SELECT DISTINCT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
-        records = cursor.fetchall()
+        with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+            cursor = conn.cursor()
+            twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("SELECT DISTINCT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+            records = cursor.fetchall()
+            
         if not records:
-            conn.close()
             log_event("📊 24-Hour Results: No signals found for the last 24 hours.")
             return
 
@@ -159,7 +158,6 @@ def generate_24h_result_report():
                     else: losses += 1
 
         if total_signals == 0:
-            conn.close()
             return
 
         win_rate = round((wins / total_signals) * 100, 1)
@@ -178,7 +176,6 @@ def generate_24h_result_report():
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
         log_event(f"📊 Real 24-Hour Results Published! Total: {total_signals}, Win Rate: {win_rate}%")
-        conn.close()
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
 
@@ -186,11 +183,10 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
-            pending_signals = cursor.fetchall()
-            conn.close()
+            with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
+                pending_signals = cursor.fetchall()
 
             if pending_signals:
                 live_coins = get_market_data()
@@ -247,11 +243,10 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
-                        conn.commit()
-                        conn.close()
+                        with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
+                            conn.commit()
                         log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
 
         except Exception as e:
@@ -316,7 +311,6 @@ def scan_and_dispatch(force_mode=False):
     else:
         if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
             should_send_vip = True
-
         if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
             should_send_free = True
 
@@ -334,13 +328,12 @@ def scan_and_dispatch(force_mode=False):
 
     if should_send_vip or should_send_free:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
-            cursor = conn.cursor()
-            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
-                           (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
-            conn.commit()
-            conn.close()
+            with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                cursor = conn.cursor()
+                now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
+                               (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
+                conn.commit()
         except Exception as e:
             log_event(f"History Save Error: {e}")
 
@@ -444,9 +437,7 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
             symbol = t.get("symbol", "")
             raw_amount = float(t.get("amount_str", "0")) / 10**6
             
-            if (to_addr == TRUST_WALLET_ADDRESS and 
-                symbol == "USDT" and 
-                raw_amount >= expected_amount_min):
+            if (to_addr == TRUST_WALLET_ADDRESS and symbol == "USDT" and raw_amount >= expected_amount_min):
                 valid_transfer = True
                 final_amount = raw_amount
                 break
@@ -462,24 +453,21 @@ def membership_expiry_checker():
     log_event("⏳ Expiry & Auto-Kick Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
-            cursor = conn.cursor()
-            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            
-            cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
-            expired_users = cursor.fetchall()
-            
-            for row in expired_users:
-                u_id = row[0]
-                success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
-                if success:
-                    log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
-                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu.")
+            with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                cursor = conn.cursor()
+                now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
+                expired_users = cursor.fetchall()
                 
-                cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
-                conn.commit()
-                
-            conn.close()
+                for row in expired_users:
+                    u_id = row[0]
+                    success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
+                    if success:
+                        log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
+                        send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu.")
+                    
+                    cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
+                    conn.commit()
         except Exception as e:
             log_event(f"Expiry Checker Error: {e}")
         time.sleep(3600)
@@ -536,53 +524,52 @@ def process_message_async(chat_id, text):
             
         else:
             txid = text.strip()
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
-            if cursor.fetchone():
-                conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Transaction ID (TXID) has already been used!")
-                return
+            with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
+                if cursor.fetchone():
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Transaction ID (TXID) has already been used!")
+                    return
                 
             is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
             
-            if is_valid:
-                if paid_amount >= 27.0:
-                    days = 30
-                    plan_name = "30 Days VIP"
-                elif paid_amount >= 18.0:
-                    days = 20
-                    plan_name = "20 Days VIP"
+            with sqlite3.connect("vip_members.db", timeout=10.0) as conn:
+                cursor = conn.cursor()
+                if is_valid:
+                    if paid_amount >= 27.0:
+                        days = 30
+                        plan_name = "30 Days VIP"
+                    elif paid_amount >= 18.0:
+                        days = 20
+                        plan_name = "20 Days VIP"
+                    else:
+                        days = 10
+                        plan_name = "10 Days VIP"
+                    
+                    expiry_dt = datetime.now(IST) + timedelta(days=days)
+                    expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
+                    cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
+                    conn.commit()
+                    
+                    success_msg = (
+                        "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
+                        f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
+                        "🎉 <b>VIP Channel Invite Link:</b>\n"
+                        "https://t.me/+YourVIPChannelInviteLink"
+                    )
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
                 else:
-                    days = 10
-                    plan_name = "10 Days VIP"
-                
-                expiry_dt = datetime.now(IST) + timedelta(days=days)
-                expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
-                
-                cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
-                cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
-                conn.commit()
-                conn.close()
-                
-                success_msg = (
-                    "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
-                    "━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
-                    f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
-                    "🎉 <b>VIP Channel Invite Link:</b>\n"
-                    "https://t.me/+YourVIPChannelInviteLink"
-                )
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
-            else:
-                conn.close()
-                fail_msg = (
-                    "❌ <b>VERIFICATION FAILED</b> ❌\n"
-                    "━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>Reason:</b> {reason}\n\n"
-                    "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
-                )
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
+                    fail_msg = (
+                        "❌ <b>VERIFICATION FAILED</b> ❌\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<b>Reason:</b> {reason}\n\n"
+                        "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
+                    )
+                    send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
     except Exception as e:
         log_event(f"🚨 Async Processing Error: {e}")
 
@@ -617,8 +604,10 @@ def telegram_polling_worker():
 def continuous_market_scanner():
     log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
     while True:
-        try: scan_and_dispatch(force_mode=False)
-        except Exception as e: log_event(f"Scanner Loop Error: {e}")
+        try: 
+            scan_and_dispatch(force_mode=False)
+        except Exception as e: 
+            log_event(f"Scanner Loop Error: {e}")
         time.sleep(600)
 
 @app.route('/')
