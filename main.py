@@ -3,7 +3,6 @@ import requests
 import sqlite3
 import os
 import threading
-import random
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
@@ -31,6 +30,7 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
+# Tracking counters and timestamps for frequency control
 free_signals_today = 0
 vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
@@ -90,70 +90,30 @@ def format_price(val):
     if val >= 1000: return f"{val:,.2f}"
     elif val >= 1: return f"{val:.4f}"
     elif val >= 0.001: return f"{val:.6f}"
-    else:
-        val_str = f"{val:.12f}".rstrip('0')
-        return val_str if len(val_str.split('.')[1]) >= 4 else f"{val:.8f}"
+    else: return f"{val:.8f}"
 
 def get_market_data():
     valid_coins = []
-    
-    # --- API 1: CoinCap Public API (Fast & Reliable, No 429/451 errors) ---
     try:
-        url_coincap = "https://api.coincap.io/v2/assets?limit=100"
-        res = requests.get(url_coincap, headers=HEADERS, timeout=10.0)
+        url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
+        res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for item in data:
-                symbol = (item.get("symbol", "") + "USDT").upper()
-                price = float(item.get("priceUsd", 0) or 0)
-                change = float(item.get("changePercent24Hr", 0) or 0)
-                vol = float(item.get("volumeUsd24Hr", 0) or 0)
-                low = price * 0.95  # Estimated low if not provided directly
-                if price > 0:
-                    valid_coins.append({
-                        "symbol": symbol, 
-                        "price": price, 
-                        "change": change, 
-                        "low": low,
-                        "vol": vol
-                    })
-            if valid_coins:
-                log_event("✅ Data successfully fetched using CoinCap API.")
-                return valid_coins
+                inst = item.get("instId", "")
+                if inst.endswith("-USDT"):
+                    symbol = inst.replace("-", "")
+                    price = float(item.get("last", 0))
+                    open_24 = float(item.get("open24h", 0))
+                    change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
+                    low = float(item.get("low24h", 0))
+                    if price > 0:
+                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+            if valid_coins: return valid_coins
         else:
-            log_event(f"⚠️ CoinCap API Error Status Code: {res.status_code}. Switching to backup API...")
+            log_event(f"OKX API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"⚠️ CoinCap Exception: {e}. Switching to backup API...")
-
-    # --- API 2: Fallback API (Kraken Public Ticker) ---
-    try:
-        url_kraken = "https://api.kraken.com/0/public/Ticker?pair=XBTUSDT,ETHUSDT,SOLUSDT,ADAUSDT,XRPUSDT,DOGEUSDT"
-        res = requests.get(url_kraken, headers=HEADERS, timeout=10.0)
-        if res.status_code == 200:
-            data = res.json().get("result", {})
-            for k, item in data.items():
-                # Format Kraken pairs to standard USDT symbols
-                sym = k.replace("USDT", "USDT").replace("XXBT", "BTC").replace("XETH", "ETH").upper()
-                if not sym.endswith("USDT"):
-                    sym += "USDT"
-                price = float(item.get("c", [0])[0] or 0)
-                vol = float(item.get("v", [0, 0])[1] or 0)
-                change = 1.2 # Default change estimation if not direct percentage
-                low = float(item.get("l", [0, 0])[1] or (price * 0.95))
-                if price > 0:
-                    valid_coins.append({
-                        "symbol": sym,
-                        "price": price,
-                        "change": change,
-                        "low": low,
-                        "vol": vol
-                    })
-            if valid_coins:
-                log_event("✅ Data successfully fetched using Kraken Backup API.")
-                return valid_coins
-    except Exception as e:
-        log_event(f"❌ All Backup APIs Failed Exception: {e}")
-
+        log_event(f"OKX Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
@@ -179,7 +139,10 @@ def generate_24h_result_report():
         for rec in records:
             sym, entry, tp1, sl = rec
             current_p = current_prices.get(sym)
-            if not current_p: continue
+            
+            if not current_p:
+                continue
+                
             total_signals += 1
             
             if tp1 > entry:
@@ -200,6 +163,7 @@ def generate_24h_result_report():
             return
 
         win_rate = round((wins / total_signals) * 100, 1)
+
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -208,8 +172,7 @@ def generate_24h_result_report():
             f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
             f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot\n"
-            f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice.</i>"
+            f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
         )
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
@@ -236,7 +199,8 @@ def live_signal_monitor_worker():
                 for sig in pending_signals:
                     s_id, sym, entry, tp1, tp2, tp3, sl = sig
                     current_p = current_prices.get(sym)
-                    if not current_p: continue
+                    if not current_p:
+                        continue
 
                     is_long = tp1 > entry
                     hit_status = None
@@ -278,8 +242,7 @@ def live_signal_monitor_worker():
                             f"📊 <b>Current Price</b>: ${format_price(current_p)}\n"
                             f"🔥 <b>Status</b>: <b>{target_str}</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"💎 <b>Join VIP For More:</b> @BinanceTop10_VIPBot\n"
-                            f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice.</i>"
+                            f"💎 <b>Join VIP For More:</b> @BinanceTop10_VIPBot"
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
@@ -290,13 +253,14 @@ def live_signal_monitor_worker():
                         conn.commit()
                         conn.close()
                         log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
+
         except Exception as e:
             log_event(f"Live Monitor Error: {e}")
         time.sleep(300)
 
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
-    log_event(f"🔍 Running Advanced Market Scan & Analysis (Force Mode: {force_mode})...")
+    log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
 
     current_time = time.time()
     current_day = datetime.now(IST).day
@@ -310,41 +274,28 @@ def scan_and_dispatch(force_mode=False):
 
     coins = get_market_data()
     if not coins:
-        log_event("❌ Scan aborted: No coins fetched from market data APIs.")
+        log_event("❌ Scan aborted: No coins fetched from market data API.")
         return
 
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT symbol FROM signal_history ORDER BY id DESC LIMIT 10")
-        recent_symbols = [row[0] for row in cursor.fetchall()]
-        conn.close()
-    except Exception:
-        recent_symbols = []
-
-    available_coins = [c for c in coins if c["symbol"] not in recent_symbols]
-    if not available_coins: available_coins = coins 
-
-    available_coins.sort(key=lambda x: abs(x["change"]) * (x["vol"] ** 0.1), reverse=True)
-    top_candidates = available_coins[:15]
-    selected_coin = random.choice(top_candidates)
+    coin_index = (vip_signals_today + free_signals_today) % len(coins)
+    selected_coin = coins[coin_index]
     
     p = selected_coin["price"]
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    if chg >= 1.0:
+    if chg >= 3.0:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 1.012, p * 1.025, p * 1.045, p * 0.988
-    elif chg <= -1.0:
+        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
+    elif chg <= -3.0:
         signal_mode = "FUTURES SHORT"
         leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 0.988, p * 0.975, p * 0.955, p * 1.012
+        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
     else:
         signal_mode = "SPOT BREAKOUT BUY"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.015, p * 1.030, p * 1.055, p * 0.985
+        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
@@ -365,6 +316,7 @@ def scan_and_dispatch(force_mode=False):
     else:
         if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
             should_send_vip = True
+
         if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
             should_send_free = True
 
@@ -372,13 +324,13 @@ def scan_and_dispatch(force_mode=False):
         dispatch_vip_signal(setup)
         vip_signals_today += 1
         last_vip_dispatch_time = current_time
-        log_event(f"💎 VIP Analyzed Signal Sent ({vip_signals_today}/36 today) for #{sym} | Change: {chg}%")
+        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
 
     if should_send_free:
         dispatch_free_signal(setup)
         free_signals_today += 1
         last_free_dispatch_time = current_time
-        log_event(f"📢 Free Analyzed Signal Sent ({free_signals_today}/6 today) for #{sym} | Change: {chg}%")
+        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
         try:
@@ -411,8 +363,7 @@ def dispatch_vip_signal(s):
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>\n"
-        f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
+        f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
     )
     return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
 
@@ -436,8 +387,7 @@ def dispatch_free_signal(s):
         f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot\n"
-        f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
+        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
     )
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
@@ -447,8 +397,10 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     
     chat_str = str(chat_id)
     if not chat_str.startswith("-"):
-        if reply_markup: payload["reply_markup"] = reply_markup
-        else: payload["reply_markup"] = KEYBOARD_LAYOUT
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        else:
+            payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
         res = requests.post(url, json=payload, timeout=10.0)
@@ -475,15 +427,15 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=5.0)
         if res.status_code != 200:
-            return False, 0, "Transaction is still propagating on blockchain or invalid TXID format."
+            return False, 0, "Invalid TXID format or Blockchain API error."
         
         data = res.json()
         if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
-            return False, 0, "Transaction is pending or failed on the blockchain."
+            return False, 0, "Transaction failed, pending, or not found on blockchain."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
         if not trc20_transfers:
-            return False, 0, "No USDT TRC20 transfer found in this Transaction ID yet."
+            return False, 0, "No USDT TRC20 transfer found in this Transaction ID."
             
         valid_transfer = False
         final_amount = 0.0
@@ -492,13 +444,17 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
             symbol = t.get("symbol", "")
             raw_amount = float(t.get("amount_str", "0")) / 10**6
             
-            if (to_addr == TRUST_WALLET_ADDRESS and symbol == "USDT" and raw_amount >= expected_amount_min):
+            if (to_addr == TRUST_WALLET_ADDRESS and 
+                symbol == "USDT" and 
+                raw_amount >= expected_amount_min):
                 valid_transfer = True
                 final_amount = raw_amount
                 break
                 
-        if valid_transfer: return True, final_amount, "Verification Successful!"
-        else: return False, 0, "Recipient address or payment amount does not match."
+        if valid_transfer:
+            return True, final_amount, "Verification Successful!"
+        else:
+            return False, 0, "Recipient address or payment amount does not match our wallet/plans."
     except Exception as e:
         return False, 0, f"Verification error: {e}"
 
@@ -509,6 +465,7 @@ def membership_expiry_checker():
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            
             cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
             expired_users = cursor.fetchall()
             
@@ -517,9 +474,11 @@ def membership_expiry_checker():
                 success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
                 if success:
                     log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
-                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan.")
+                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu.")
+                
                 cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
                 conn.commit()
+                
             conn.close()
         except Exception as e:
             log_event(f"Expiry Checker Error: {e}")
@@ -529,18 +488,52 @@ def process_message_async(chat_id, text):
     try:
         log_event(f"📩 Processing message from {chat_id}: {text}")
         if text.startswith("/start"):
-            welcome_text = "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\nUse the menu buttons below to navigate:"
+            welcome_text = (
+                "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\n"
+                "Get high-accuracy crypto signals with multi-TP targets and automated VIP access.\n"
+                "Use the menu buttons below to navigate:"
+            )
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text)
+            
         elif "View VIP Plans" in text:
-            plan_text = "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n• 10 Days: $10\n• 20 Days: $19\n• 30 Days: $28"
+            plan_text = (
+                "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "• <b>10 Days VIP</b>: $10 USDT\n"
+                "• <b>20 Days VIP</b>: $19 USDT\n"
+                "• <b>30 Days VIP</b>: $28 USDT\n\n"
+                "<i>Click 'Get Payment Address' to proceed with payment.</i>"
+            )
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text)
+            
         elif "Get Payment Address" in text:
-            pay_text = f"💳 <b>USDT TRC20 ADDRESS</b>:\n<code>{TRUST_WALLET_ADDRESS}</code>"
+            pay_text = (
+                "💳 <b>USDT TRC20 PAYMENT ADDRESS</b> 💳\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
+                "⚠️ <i>Send only USDT via TRC20 network. After payment, save your TXID.</i>"
+            )
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, pay_text)
+            
         elif "Verify Payment" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "🔍 Please send your <b>Transaction ID (TXID)</b> right here.")
+            verify_text = (
+                "🔍 <b>PAYMENT VERIFICATION</b> 🔍\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "Please send your <b>Transaction ID (TXID)</b> right here in the chat.\n\n"
+                "Our automated system will instantly verify your TRC20 transfer and activate your VIP access!"
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, verify_text)
+            
         elif "How to Verify TXID" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Transfer USDT, copy TXID, and send it here.")
+            guide_text = (
+                "📖 <b>HOW TO VERIFY PAYMENT</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "1. Transfer the required USDT to our TRC20 wallet.\n"
+                "2. Copy the Transaction ID (TXID / Hash) from your wallet.\n"
+                "3. Send your TXID here in chat for automatic verification and VIP activation."
+            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
+            
         else:
             txid = text.strip()
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
@@ -548,32 +541,58 @@ def process_message_async(chat_id, text):
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
                 conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!")
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Transaction ID (TXID) has already been used!")
                 return
                 
             is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
+            
             if is_valid:
-                days = 30 if paid_amount >= 27.0 else (20 if paid_amount >= 18.0 else 10)
-                plan_name = f"{days} Days VIP"
-                expiry_str = (datetime.now(IST) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                if paid_amount >= 27.0:
+                    days = 30
+                    plan_name = "30 Days VIP"
+                elif paid_amount >= 18.0:
+                    days = 20
+                    plan_name = "20 Days VIP"
+                else:
+                    days = 10
+                    plan_name = "10 Days VIP"
+                
+                expiry_dt = datetime.now(IST) + timedelta(days=days)
+                expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
                 
                 cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
                 cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
                 conn.commit()
                 conn.close()
                 
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"✅ <b>VIP Activated!</b> Valid till: {expiry_str}")
+                success_msg = (
+                    "✅ <b>PAYMENT VERIFIED & VIP ACTIVATED!</b> ✅\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 <b>Plan</b>: {plan_name} (${paid_amount} USDT)\n"
+                    f"⏳ <b>Valid Till</b>: {expiry_str}\n\n"
+                    "🎉 <b>VIP Channel Invite Link:</b>\n"
+                    "https://t.me/+YourVIPChannelInviteLink"
+                )
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_msg)
             else:
                 conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"⏳ <b>Verification Failed:</b> {reason}")
+                fail_msg = (
+                    "❌ <b>VERIFICATION FAILED</b> ❌\n"
+                    "━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Reason:</b> {reason}\n\n"
+                    "⚠️ Please ensure you sent USDT via TRC20 to the correct wallet address and provided a valid TXID."
+                )
+                send_telegram_msg(VIP_BOT_TOKEN, chat_id, fail_msg)
     except Exception as e:
         log_event(f"🚨 Async Processing Error: {e}")
 
 def telegram_polling_worker():
     log_event("🔄 Telegram Polling Worker Started...")
     offset = 0
-    try: requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
-    except Exception: pass
+    try:
+        requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
+    except Exception:
+        pass
 
     while True:
         try:
@@ -589,13 +608,14 @@ def telegram_polling_worker():
                             chat_id = msg["chat"]["id"]
                             text = msg.get("text", "").strip()
                             if text:
+                                log_event(f"🔔 Polling Received text: '{text}' from chat_id: {chat_id}")
                                 threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         except Exception as e:
             log_event(f"🚨 Polling Loop Error: {e}")
         time.sleep(1)
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active (CoinCap & Kraken Fallback Enabled)...")
+    log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
@@ -610,7 +630,7 @@ def get_logs(): return jsonify({"logs": system_logs})
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return jsonify({"status": "success", "message": "Force Scan Triggered!"})
+    return jsonify({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
 
 @app.route('/force-result')
 def force_result():
