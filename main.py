@@ -46,7 +46,7 @@ def log_event(message):
  
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = sqlite3.connect("vip_members.db", timeout=5.0)
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
@@ -72,7 +72,7 @@ init_db()
  
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = sqlite3.connect("vip_members.db", timeout=5.0)
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
@@ -106,7 +106,7 @@ def get_market_data():
     valid_coins = []
     try:
         url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-        res = requests.get(url, headers=HEADERS, timeout=10.0)
+        res = requests.get(url, headers=HEADERS, timeout=5.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for item in data:
@@ -129,15 +129,13 @@ def get_market_data():
                             "vol": vol
                         })
             if valid_coins: return valid_coins
-        else:
-            log_event(f"OKX API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"OKX Fetch Failed Exception: {e}")
+        log_event(f"OKX Fetch Failed: {e}")
     return valid_coins
  
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = sqlite3.connect("vip_members.db", timeout=5.0)
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -199,7 +197,7 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = sqlite3.connect("vip_members.db", timeout=5.0)
             cursor = conn.cursor()
             cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
             pending_signals = cursor.fetchall()
@@ -260,7 +258,7 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                        conn = sqlite3.connect("vip_members.db", timeout=5.0)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
                         conn.commit()
@@ -289,7 +287,7 @@ def scan_and_dispatch(force_mode=False):
         return
 
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = sqlite3.connect("vip_members.db", timeout=5.0)
         cursor = conn.cursor()
         cursor.execute("SELECT symbol FROM signal_history ORDER BY id DESC LIMIT 15")
         recent_symbols = [row[0] for row in cursor.fetchall()]
@@ -372,7 +370,7 @@ def scan_and_dispatch(force_mode=False):
 
     if should_send_vip or should_send_free:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = sqlite3.connect("vip_members.db", timeout=5.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
@@ -441,19 +439,19 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
             payload["reply_markup"] = KEYBOARD_LAYOUT
 
     try:
-        res = requests.post(url, json=payload, timeout=10.0)
+        res = requests.post(url, json=payload, timeout=5.0)
         data = res.json()
         return data.get("ok", False)
     except Exception as e:
-        log_event(f"🚨 Telegram Send Exception Error: {e}")
+        log_event(f"Telegram Send Error: {e}")
         return False
  
 def kick_telegram_user(chat_id, user_id):
     url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/banChatMember"
     payload = {"chat_id": chat_id, "user_id": user_id, "revoke_messages": False}
     try:
-        res = requests.post(url, json=payload, timeout=5.0)
-        requests.post(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/unbanChatMember", json={"chat_id": chat_id, "user_id": user_id}, timeout=5.0)
+        res = requests.post(url, json=payload, timeout=3.0)
+        requests.post(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/unbanChatMember", json={"chat_id": chat_id, "user_id": user_id}, timeout=3.0)
         return res.json().get("ok", False)
     except Exception:
         return False
@@ -461,7 +459,7 @@ def kick_telegram_user(chat_id, user_id):
 def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
     try:
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
-        res = requests.get(url, timeout=5.0)
+        res = requests.get(url, timeout=4.0)
         if res.status_code != 200:
             return False, 0, "Transaction propagating or invalid TXID format. Please wait 1-2 minutes."
         
@@ -490,12 +488,12 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         else:
             return False, 0, "Recipient address or payment amount does not match."
     except Exception as e:
-        return False, 0, f"Verification error: {e}"
+        return False, 0, f"Verification timeout or error: Please try again."
  
 def membership_expiry_checker():
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = sqlite3.connect("vip_members.db", timeout=5.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
@@ -526,7 +524,7 @@ def process_message_async(chat_id, text):
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Send USDT via TRC20, copy TXID and paste it here.")
         else:
             txid = text.strip()
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = sqlite3.connect("vip_members.db", timeout=5.0)
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
