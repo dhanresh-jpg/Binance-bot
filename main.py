@@ -46,7 +46,7 @@ def log_event(message):
  
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=5.0)
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
@@ -64,7 +64,7 @@ def init_db():
                             status TEXT DEFAULT "PENDING")''')
         conn.commit()
         conn.close()
-        log_event("Database Initialized Successfully.")
+        log_event("Database Initialized Successfully with 10.0s timeout.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
  
@@ -72,7 +72,7 @@ init_db()
  
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=5.0)
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
@@ -81,12 +81,17 @@ def cleanup_3day_old_data():
         conn.commit()
         conn.close()
         if deleted_count > 0:
-            log_event(f"🧹 Cleaned {deleted_count} old records.")
+            log_event(f"🧹 Cleaned {deleted_count} old records safely.")
     except Exception as e:
         log_event(f"Cleanup Error: {e}")
  
 def format_price(val):
-    if val is None or val == 0: 
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        return "0.00"
+        
+    if val == 0: 
         return "0.00"
     if val >= 1000: 
         return f"{val:,.2f}"
@@ -106,28 +111,31 @@ def get_market_data():
     valid_coins = []
     try:
         url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-        res = requests.get(url, headers=HEADERS, timeout=5.0)
+        res = requests.get(url, headers=HEADERS, timeout=6.0)
         if res.status_code == 200:
             data = res.json().get("data", [])
             for item in data:
-                inst = item.get("instId", "")
-                if inst.endswith("-USDT"):
-                    symbol = inst.replace("-", "")
-                    price = float(item.get("last", 0))
-                    open_24 = float(item.get("open24h", 0))
-                    change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
-                    low = float(item.get("low24h", 0))
-                    high = float(item.get("high24h", 0))
-                    vol = float(item.get("vol24h", 0))
-                    if price > 0 and low > 0 and high > 0:
-                        valid_coins.append({
-                            "symbol": symbol, 
-                            "price": price, 
-                            "change": change, 
-                            "low": low,
-                            "high": high,
-                            "vol": vol
-                        })
+                try:
+                    inst = item.get("instId", "")
+                    if inst.endswith("-USDT"):
+                        symbol = inst.replace("-", "")
+                        price = float(item.get("last", 0))
+                        open_24 = float(item.get("open24h", 0))
+                        change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
+                        low = float(item.get("low24h", 0))
+                        high = float(item.get("high24h", 0))
+                        vol = float(item.get("vol24h", 0))
+                        if price > 0 and low > 0 and high > 0:
+                            valid_coins.append({
+                                "symbol": symbol, 
+                                "price": price, 
+                                "change": change, 
+                                "low": low,
+                                "high": high,
+                                "vol": vol
+                            })
+                except (ValueError, TypeError):
+                    continue
             if valid_coins: return valid_coins
     except Exception as e:
         log_event(f"OKX Fetch Failed: {e}")
@@ -135,7 +143,7 @@ def get_market_data():
  
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=5.0)
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -197,7 +205,7 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=5.0)
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
             pending_signals = cursor.fetchall()
@@ -258,7 +266,7 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        conn = sqlite3.connect("vip_members.db", timeout=5.0)
+                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
                         conn.commit()
@@ -287,7 +295,7 @@ def scan_and_dispatch(force_mode=False):
         return
 
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=5.0)
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         cursor.execute("SELECT symbol FROM signal_history ORDER BY id DESC LIMIT 15")
         recent_symbols = [row[0] for row in cursor.fetchall()]
@@ -370,7 +378,7 @@ def scan_and_dispatch(force_mode=False):
 
     if should_send_vip or should_send_free:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=5.0)
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
@@ -486,119 +494,67 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
         if valid_transfer:
             return True, final_amount, "Verification Successful!"
         else:
-            return False, 0, "Recipient address or payment amount does not match."
+            return False, 0, "Recipient address or USDT amount mismatch."
     except Exception as e:
-        return False, 0, f"Verification timeout or error: Please try again."
- 
-def membership_expiry_checker():
-    while True:
-        try:
-            conn = sqlite3.connect("vip_members.db", timeout=5.0)
-            cursor = conn.cursor()
-            now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now_str,))
-            expired_users = cursor.fetchall()
-            
-            for row in expired_users:
-                u_id = row[0]
-                if kick_telegram_user(VIP_CHANNEL_ID, u_id):
-                    send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>")
-                cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
-                conn.commit()
-            conn.close()
-        except Exception as e:
-            log_event(f"Expiry Checker Error: {e}")
-        time.sleep(3600)
- 
-def process_message_async(chat_id, text):
-    try:
-        if text.startswith("/start"):
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "🤖 <b>Welcome to Binance Top 10 Signals Bot!</b>\n\nUse the menu buttons below:")
-        elif "View VIP Plans" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "💎 <b>VIP PLANS:</b>\n• 10 Days: $10 USDT\n• 20 Days: $19 USDT\n• 30 Days: $28 USDT")
-        elif "Get Payment Address" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"💳 <b>USDT TRC20 Address:</b>\n<code>{TRUST_WALLET_ADDRESS}</code>")
-        elif "Verify Payment" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "🔍 Please send your **Transaction ID (TXID)** right here.")
-        elif "How to Verify TXID" in text:
-            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Send USDT via TRC20, copy TXID and paste it here.")
-        else:
-            txid = text.strip()
-            conn = sqlite3.connect("vip_members.db", timeout=5.0)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
-            if cursor.fetchone():
-                conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used!")
-                return
-                
-            is_valid, paid_amount, reason = verify_usdt_trc20_tx(txid, expected_amount_min=10.0)
-            if is_valid:
-                days = 30 if paid_amount >= 27.0 else (20 if paid_amount >= 18.0 else 10)
-                expiry_str = (datetime.now(IST) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-                cursor.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
-                cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry_str))
-                conn.commit()
-                conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"✅ <b>VIP Activated!</b> Valid till: {expiry_str}")
-            else:
-                conn.close()
-                send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"⏳ <b>Verification Pending:</b> {reason}")
-    except Exception as e:
-        log_event(f"Async Error: {e}")
- 
-def telegram_polling_worker():
-    offset = 0
-    try: 
-        requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
-    except Exception: 
-        pass
+        return False, 0, f"Verification error: {str(e)}"
 
-    while True:
-        try:
-            res = requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30", timeout=35.0)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        if "message" in update:
-                            chat_id = update["message"]["chat"]["id"]
-                            text = update["message"].get("text", "").strip()
-                            if text:
-                                threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
-        except Exception as e:
-            log_event(f"Polling Error: {e}")
-        time.sleep(1)
-
-def continuous_market_scanner():
-    log_event("🚀 Advanced Spot & Futures S/R Engine Active...")
-    while True:
-        try: scan_and_dispatch(force_mode=False)
-        except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(600)
- 
 @app.route('/')
-def home(): return jsonify({"status": "active"})
- 
-@app.route('/logs')
-def get_logs(): return jsonify({"logs": system_logs})
- 
-@app.route('/force-signal')
-def force_signal():
-    threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return jsonify({"status": "success", "message": "Force Signal Triggered!"})
- 
-@app.route('/force-result')
-def force_result():
-    threading.Thread(target=generate_24h_result_report, daemon=True).start()
-    return jsonify({"status": "success", "message": "Result Report Triggered!"})
- 
-# Background Threads Initialization
-threading.Thread(target=telegram_polling_worker, daemon=True).start()
-threading.Thread(target=continuous_market_scanner, daemon=True).start()
-threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
-threading.Thread(target=membership_expiry_checker, daemon=True).start()
- 
+def home():
+    return "VIP Crypto Signal Bot is Running Successfully!", 200
+
+@app.route(f'/{FREE_BOT_TOKEN}', methods=['POST'])
+def free_webhook():
+    try:
+        data = request.get_json()
+        if data and "message" in data:
+            message = data["message"]
+            chat_id = message["chat"]["id"]
+            text = message.get("text", "")
+            
+            if text.startswith("/start"):
+                send_telegram_msg(FREE_BOT_TOKEN, chat_id, "Welcome to Binance Top 10 Free Signals Bot! Choose an option below:")
+            elif text == "💎 View VIP Plans":
+                send_telegram_msg(FREE_BOT_TOKEN, chat_id, "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n\n1 Month: $10 USDT\nLifetime: $30 USDT\n\nClick 'Get Payment Address' to proceed.")
+            elif text == "💳 Get Payment Address":
+                send_telegram_msg(FREE_BOT_TOKEN, chat_id, f"💳 <b>USDT (TRC20) Payment Address:</b>\n\n<code>{TRUST_WALLET_ADDRESS}</code>\n\nSend minimum $10 USDT and verify using your Transaction ID (TXID).")
+            elif text == "✅ How to Verify TXID":
+                send_telegram_msg(FREE_BOT_TOKEN, chat_id, "Send your USDT TRC20 transaction hash (TXID) after making payment to automatically activate your VIP membership.")
+            elif text == "🔍 Verify Payment":
+                send_telegram_msg(FREE_BOT_TOKEN, chat_id, "Please send your TXID in format: `/verify <TXID>`")
+            elif text.startswith("/verify "):
+                txid = text.split(" ", 1)[1].strip()
+                try:
+                    conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT txid FROM processed_txids WHERE txid = ?", (txid,))
+                    if cursor.fetchone():
+                        send_telegram_msg(FREE_BOT_TOKEN, chat_id, "❌ This TXID has already been used.")
+                        conn.close()
+                        return jsonify({"status": "ok"}), 200
+                    conn.close()
+                except Exception:
+                    pass
+
+                success, amt, msg_desc = verify_usdt_trc20_tx(txid, 10.0)
+                if success:
+                    try:
+                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT OR IGNORE INTO processed_txids (txid) VALUES (?)", (txid,))
+                        expiry = (datetime.now(IST) + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry))
+                        conn.commit()
+                        conn.close()
+                    except Exception:
+                        pass
+                    send_telegram_msg(FREE_BOT_TOKEN, chat_id, f"✅ Payment Verified Successfully!\nAmount: ${amt}\nYour VIP access is now active.")
+                else:
+                    send_telegram_msg(FREE_BOT_TOKEN, chat_id, f"❌ Verification Failed: {msg_desc}")
+    except Exception as e:
+        log_event(f"Webhook Error: {e}")
+    return jsonify({"status": "ok"}), 200
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
