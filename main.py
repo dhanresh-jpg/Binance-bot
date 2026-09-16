@@ -308,10 +308,9 @@ def scan_and_dispatch(force_mode=False):
     p = selected_coin["price"]
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
-    sup = selected_coin["low"]   # 24h Support level
-    res = selected_coin["high"]  # 24h Resistance level
+    sup = selected_coin["low"]
+    res = selected_coin["high"]
     
-    # MIXED STRATEGY: Alternating or selecting Smart Spot vs Futures based on market condition
     signal_choice_pool = ["SPOT BUY", "FUTURES LONG", "FUTURES SHORT"]
     chosen_type = random.choice(signal_choice_pool)
 
@@ -321,21 +320,21 @@ def scan_and_dispatch(force_mode=False):
         tp1 = p * 1.025
         tp2 = p * 1.055
         tp3 = p * 1.090
-        sl = sup * 0.975  # Safe stop loss below support for spot holding
+        sl = sup * 0.975
     elif chosen_type == "FUTURES LONG":
         signal_mode = "FUTURES LONG (S/R Bounce)"
         leverage = "Cross 3x - 5x"
         tp1 = p * 1.020
         tp2 = p * 1.042
         tp3 = p * 1.070
-        sl = sup * 0.982  # Safe SL buffer
+        sl = sup * 0.982
     else:
         signal_mode = "FUTURES SHORT (Resistance Rejection)"
         leverage = "Cross 3x - 5x"
         tp1 = p * 0.980
         tp2 = p * 0.958
         tp3 = p * 0.930
-        sl = res * 1.018  # Safe SL buffer
+        sl = res * 1.018
 
     rsi_est = round(50.0 + (chg * 0.5), 1)
     if rsi_est > 78: rsi_est = 73.5
@@ -552,26 +551,27 @@ def process_message_async(chat_id, text):
  
 def telegram_polling_worker():
     offset = 0
-    try: requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
-    except Exception: pass
+    try: 
+        requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/deleteWebhook", timeout=5)
+    except Exception: 
+        pass
 
-str_func = "process_message_async"
-while True:
-    try:
-        res = requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30", timeout=35.0)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("ok"):
-                for update in data.get("result", []):
-                    offset = update["update_id"] + 1
-                    if "message" in update:
-                        chat_id = update["message"]["chat"]["id"]
-                        text = update["message"].get("text", "").strip()
-                        if text:
-                            threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
-    except Exception as e:
-        log_event(f"Polling Error: {e}")
-    time.sleep(1)
+    while True:
+        try:
+            res = requests.get(f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30", timeout=35.0)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        if "message" in update:
+                            chat_id = update["message"]["chat"]["id"]
+                            text = update["message"].get("text", "").strip()
+                            if text:
+                                threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
+        except Exception as e:
+            log_event(f"Polling Error: {e}")
+        time.sleep(1)
 
 def continuous_market_scanner():
     log_event("🚀 Advanced Spot & Futures S/R Engine Active...")
