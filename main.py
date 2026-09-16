@@ -375,9 +375,12 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
 
     try:
         res = requests.post(url, json=payload, timeout=10.0)
-        return res.json().get("ok", False)
+        res_data = res.json()
+        if not res_data.get("ok", False):
+            log_event(f"Telegram API Error Response ({chat_id}): {res_data}")
+        return res_data.get("ok", False)
     except Exception as e:
-        log_event(f"Telegram Send Error: {e}")
+        log_event(f"Telegram Send Exception Error: {e}")
         return False
 
 def kick_telegram_user(chat_id, user_id):
@@ -492,7 +495,7 @@ def force_signal():
 def test_scan():
     try:
         scan_and_dispatch(force_mode=True)
-        return jsonify({"status": "success", "message": "Test scan executed successfully! Check your Telegram channels."})
+        return jsonify({"status": "success", "message": "Test scan executed successfully! Check logs for API responses."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
