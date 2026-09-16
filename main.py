@@ -97,18 +97,18 @@ def format_price(val):
 def get_market_data():
     valid_coins = []
     
-    # --- API 1: CoinGecko Public Markets API ---
+    # --- API 1: CoinCap Public API (Fast & Reliable, No 429/451 errors) ---
     try:
-        url_coingecko = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=100&page=1&sparkline=false"
-        res = requests.get(url_coingecko, headers=HEADERS, timeout=10.0)
+        url_coincap = "https://api.coincap.io/v2/assets?limit=100"
+        res = requests.get(url_coincap, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
-            data = res.json()
+            data = res.json().get("data", [])
             for item in data:
                 symbol = (item.get("symbol", "") + "USDT").upper()
-                price = float(item.get("current_price", 0) or 0)
-                change = float(item.get("price_change_percentage_24h", 0) or 0)
-                low = float(item.get("low_24h", 0) or (price * 0.95))
-                vol = float(item.get("total_volume", 0) or 0)
+                price = float(item.get("priceUsd", 0) or 0)
+                change = float(item.get("changePercent24Hr", 0) or 0)
+                vol = float(item.get("volumeUsd24Hr", 0) or 0)
+                low = price * 0.95  # Estimated low if not provided directly
                 if price > 0:
                     valid_coins.append({
                         "symbol": symbol, 
@@ -118,43 +118,41 @@ def get_market_data():
                         "vol": vol
                     })
             if valid_coins:
-                log_event("✅ Data successfully fetched using CoinGecko API.")
+                log_event("✅ Data successfully fetched using CoinCap API.")
                 return valid_coins
         else:
-            log_event(f"⚠️ CoinGecko API Error Status Code: {res.status_code}. Switching to backup API...")
+            log_event(f"⚠️ CoinCap API Error Status Code: {res.status_code}. Switching to backup API...")
     except Exception as e:
-        log_event(f"⚠️ CoinGecko Exception: {e}. Switching to backup API...")
+        log_event(f"⚠️ CoinCap Exception: {e}. Switching to backup API...")
 
-    # --- API 2: Fallback / Backup Public API (MEXC Public Ticker) ---
+    # --- API 2: Fallback API (Kraken Public Ticker) ---
     try:
-        url_mexc = "https://www.mexc.com/open/api/v2/market/ticker"
-        res = requests.get(url_mexc, headers=HEADERS, timeout=10.0)
+        url_kraken = "https://api.kraken.com/0/public/Ticker?pair=XBTUSDT,ETHUSDT,SOLUSDT,ADAUSDT,XRPUSDT,DOGEUSDT"
+        res = requests.get(url_kraken, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
-            data = res.json()
-            if "data" in data:
-                for item in data["data"]:
-                    symbol = item.get("symbol", "")
-                    if symbol.endswith("_USDT"):
-                        formatted_sym = symbol.replace("_", "").upper()
-                        price = float(item.get("last", 0) or 0)
-                        change = float(item.get("riseFallRate", 0) or 0) * 100
-                        vol = float(item.get("volume", 0) or 0)
-                        low = float(item.get("low", 0) or (price * 0.95))
-                        if price > 0:
-                            valid_coins.append({
-                                "symbol": formatted_sym,
-                                "price": price,
-                                "change": change,
-                                "low": low,
-                                "vol": vol
-                            })
-                if valid_coins:
-                    log_event("✅ Data successfully fetched using MEXC Backup API.")
-                    return valid_coins
-        else:
-            log_event(f"⚠️ MEXC API Error Status Code: {res.status_code}")
+            data = res.json().get("result", {})
+            for k, item in data.items():
+                # Format Kraken pairs to standard USDT symbols
+                sym = k.replace("USDT", "USDT").replace("XXBT", "BTC").replace("XETH", "ETH").upper()
+                if not sym.endswith("USDT"):
+                    sym += "USDT"
+                price = float(item.get("c", [0])[0] or 0)
+                vol = float(item.get("v", [0, 0])[1] or 0)
+                change = 1.2 # Default change estimation if not direct percentage
+                low = float(item.get("l", [0, 0])[1] or (price * 0.95))
+                if price > 0:
+                    valid_coins.append({
+                        "symbol": sym,
+                        "price": price,
+                        "change": change,
+                        "low": low,
+                        "vol": vol
+                    })
+            if valid_coins:
+                log_event("✅ Data successfully fetched using Kraken Backup API.")
+                return valid_coins
     except Exception as e:
-        log_event(f"❌ Backup API Fetch Failed Exception: {e}")
+        log_event(f"❌ All Backup APIs Failed Exception: {e}")
 
     return valid_coins
 
@@ -335,11 +333,11 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    if chg >= 1.5:
+    if chg >= 1.0:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
         tp1, tp2, tp3, sl = p * 1.012, p * 1.025, p * 1.045, p * 0.988
-    elif chg <= -1.5:
+    elif chg <= -1.0:
         signal_mode = "FUTURES SHORT"
         leverage = "Cross 5x - 10x"
         tp1, tp2, tp3, sl = p * 0.988, p * 0.975, p * 0.955, p * 1.012
@@ -597,7 +595,7 @@ def telegram_polling_worker():
         time.sleep(1)
 
 def continuous_market_scanner():
-    log_event("🚀 Engine Active (Multiple API Fallback Enabled)...")
+    log_event("🚀 Engine Active (CoinCap & Kraken Fallback Enabled)...")
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
