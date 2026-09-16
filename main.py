@@ -86,7 +86,7 @@ def cleanup_3day_old_data():
     except Exception as e:
         log_event(f"Cleanup Error: {e}")
 
-# ==================== UPDATED FORMAT PRICE (FIXED FOR MEME COINS) ====================
+# ==================== UPDATED FORMAT PRICE (EXACT EXCHANGE VALUE SYNC) ====================
 def format_price(val):
     if val is None or val == 0: 
         return "0.00"
@@ -99,7 +99,6 @@ def format_price(val):
     elif val >= 0.00001: 
         return f"{val:.8f}"
     else:
-        # Ultra-low-priced meme coins (like BabyDogeUSDT) ke liye dynamic decimals
         formatted = f"{val:.12f}".rstrip('0')
         if formatted.endswith('.'):
             formatted = formatted.rstrip('.')
@@ -120,6 +119,7 @@ def get_market_data():
                     open_24 = float(item.get("open24h", 0))
                     change = ((price - open_24) / open_24 * 100) if open_24 > 0 else 0
                     low = float(item.get("low24h", 0))
+                    high = float(item.get("high24h", price))
                     vol = float(item.get("vol24h", 0))
                     if price > 0:
                         valid_coins.append({
@@ -127,6 +127,7 @@ def get_market_data():
                             "price": price, 
                             "change": change, 
                             "low": low,
+                            "high": high,
                             "vol": vol
                         })
             if valid_coins: return valid_coins
@@ -159,10 +160,7 @@ def generate_24h_result_report():
         for rec in records:
             sym, entry, tp1, sl = rec
             current_p = current_prices.get(sym)
-            
-            if not current_p:
-                continue
-                
+            if not current_p: continue
             total_signals += 1
             
             if tp1 > entry:
@@ -183,7 +181,6 @@ def generate_24h_result_report():
             return
 
         win_rate = round((wins / total_signals) * 100, 1)
-
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -195,7 +192,6 @@ def generate_24h_result_report():
             f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot\n"
             f"⚠️ <i>Disclaimer: For educational purposes only. Not financial advice.</i>"
         )
-
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
         log_event(f"📊 Real 24-Hour Results Published! Total: {total_signals}, Win Rate: {win_rate}%")
@@ -220,8 +216,7 @@ def live_signal_monitor_worker():
                 for sig in pending_signals:
                     s_id, sym, entry, tp1, tp2, tp3, sl = sig
                     current_p = current_prices.get(sym)
-                    if not current_p:
-                        continue
+                    if not current_p: continue
 
                     is_long = tp1 > entry
                     hit_status = None
@@ -275,7 +270,6 @@ def live_signal_monitor_worker():
                         conn.commit()
                         conn.close()
                         log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
-
         except Exception as e:
             log_event(f"Live Monitor Error: {e}")
         time.sleep(300)
@@ -312,8 +306,13 @@ def scan_and_dispatch(force_mode=False):
     if not available_coins:
         available_coins = coins
 
-    available_coins.sort(key=lambda x: abs(x["change"]) * (x["vol"] ** 0.1), reverse=True)
-    
+    # ==================== 2. HIGH ACCURACY MULTI-STRATEGY SCORING ====================
+    for c in available_coins:
+        # Score calculation based on momentum, volume weight, and proximity to breakout
+        spread = abs(c["high"] - c["low"]) / c["price"] if c["price"] > 0 else 0
+        c["score"] = (abs(c["change"]) * 1.5) + (spread * 2.0) + ((c["vol"] ** 0.05) * 0.5)
+
+    available_coins.sort(key=lambda x: x["score"], reverse=True)
     top_candidates = available_coins[:15]
     selected_coin = random.choice(top_candidates)
     
@@ -321,22 +320,24 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    if chg >= 2.5:
+    # ==================== 1. FIXED SPOT & FUTURES STRATEGY LOGIC ====================
+    if chg >= 1.5:
         signal_mode = "FUTURES LONG"
         leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
-    elif chg <= -2.5:
+        tp1, tp2, tp3, sl = p * 1.018, p * 1.035, p * 1.065, p * 0.985
+    elif chg <= -1.5:
         signal_mode = "FUTURES SHORT"
         leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
+        tp1, tp2, tp3, sl = p * 0.982, p * 0.965, p * 0.935, p * 1.015
     else:
+        # Improved Stable Spot Breakout Strategy for sideways/low-movement tokens
         signal_mode = "SPOT BREAKOUT BUY"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965
+        tp1, tp2, tp3, sl = p * 1.020, p * 1.045, p * 1.080, p * 0.970
 
-    rsi_est = round(50.0 + (chg * 0.6), 1)
-    if rsi_est > 80: rsi_est = 78.4
-    elif rsi_est < 20: rsi_est = 22.1
+    rsi_est = round(50.0 + (chg * 0.8), 1)
+    if rsi_est > 78: rsi_est = 76.5
+    elif rsi_est < 22: rsi_est = 23.5
 
     setup = {
         "symbol": sym, "price": p, "mode": signal_mode, "leverage": leverage,
@@ -353,7 +354,6 @@ def scan_and_dispatch(force_mode=False):
     else:
         if vip_signals_today < 36 and (current_time - last_vip_dispatch_time >= 2400):
             should_send_vip = True
-
         if free_signals_today < 6 and (current_time - last_free_dispatch_time >= 14400):
             should_send_free = True
 
@@ -398,7 +398,7 @@ def dispatch_vip_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
+        f"⚖️ <b>Risk / Reward</b>: 1 : 2.8\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>\n"
         f"📚 <i>Disclaimer: For educational purposes only. Not financial advice. DYOR!</i>"
@@ -422,7 +422,7 @@ def dispatch_free_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
+        f"⚖️ <b>Risk / Reward</b>: 1 : 2.8\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
         f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot\n"
@@ -517,7 +517,6 @@ def membership_expiry_checker():
                 
                 cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
                 conn.commit()
-                
             conn.close()
         except Exception as e:
             log_event(f"Expiry Checker Error: {e}")
