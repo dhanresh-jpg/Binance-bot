@@ -310,18 +310,19 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
+    # 🎯 HIGH-PROBABILITY SCALPS (Updated for high win-rate & tight TP1)
     if chg >= 3.0:
-        signal_mode = "FUTURES LONG"
-        leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 1.020, p * 1.040, p * 1.070, p * 0.980
+        signal_mode = "FUTURES SCALP LONG"
+        leverage = "Cross 10x - 20x"
+        tp1, tp2, tp3, sl = p * 1.006, p * 1.015, p * 1.030, p * 0.940
     elif chg <= -3.0:
-        signal_mode = "FUTURES SHORT"
-        leverage = "Cross 5x - 10x"
-        tp1, tp2, tp3, sl = p * 0.980, p * 0.960, p * 0.930, p * 1.020
+        signal_mode = "FUTURES SCALP SHORT"
+        leverage = "Cross 10x - 20x"
+        tp1, tp2, tp3, sl = p * 0.994, p * 0.985, p * 0.970, p * 1.060
     else:
-        signal_mode = "SPOT BREAKOUT BUY"
+        signal_mode = "SPOT QUICK SCALP"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.025, p * 1.050, p * 1.090, p * 0.965
+        tp1, tp2, tp3, sl = p * 1.008, p * 1.020, p * 1.040, p * 0.920
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
@@ -386,7 +387,7 @@ def dispatch_vip_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
+        f"⚖️ <b>Strategy</b>: High-Probability Scalp\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔗 <b>Create Binance Account (Ref):</b> {BINANCE_REF_LINK}\n"
         f"⚠️ <i>Use 2-5% of total wallet balance per trade.</i>"
@@ -410,7 +411,7 @@ def dispatch_free_signal(s):
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
-        f"⚖️ <b>Risk / Reward</b>: 1 : 2.5\n"
+        f"⚖️ <b>Strategy</b>: High-Probability Scalp\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔗 <b>Binance Referral Link:</b> {BINANCE_REF_LINK}\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
