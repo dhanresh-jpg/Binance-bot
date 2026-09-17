@@ -102,24 +102,23 @@ def format_price(val):
 def get_market_data():
     valid_coins = []
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
+        # CoinGecko API integration (Replaced Binance API to avoid 451 geo-block error)
+        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=24h"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
-                symbol = item.get("symbol", "")
-                if symbol.endswith("USDT"):
-                    price = float(item.get("lastPrice", 0))
-                    open_24 = float(item.get("openPrice", 0))
-                    change = float(item.get("priceChangePercent", 0))
-                    low = float(item.get("lowPrice", 0))
-                    if price > 0:
-                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+                symbol = (item.get("symbol", "")).upper() + "USDT"
+                price = float(item.get("current_price", 0))
+                change = float(item.get("price_change_percentage_24h", 0) or 0)
+                low = float(item.get("low_24h", price * 0.95) or price * 0.95)
+                if price > 0:
+                    valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins: return valid_coins
         else:
-            log_event(f"Binance API Error Status Code: {res.status_code}")
+            log_event(f"CoinGecko API Error Status Code: {res.status_code}")
     except Exception as e:
-        log_event(f"Binance Fetch Failed Exception: {e}")
+        log_event(f"CoinGecko Fetch Failed Exception: {e}")
     return valid_coins
 
 def generate_24h_result_report():
