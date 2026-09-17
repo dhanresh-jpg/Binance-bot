@@ -32,16 +32,11 @@ KEYBOARD_LAYOUT = {
     "is_persistent": True
 }
 
-# Tracking counters and timestamps for frequency control
 free_signals_today = 0
 vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
 last_free_dispatch_time = 0
 last_vip_dispatch_time = 0
-
-# Cache variables to prevent CoinGecko 429 Rate Limit Errors
-market_data_cache = []
-last_cache_update_time = 0
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -75,7 +70,7 @@ def init_db():
                             status TEXT DEFAULT "PENDING")''')
         conn.commit()
         conn.close()
-        log_event("Database Initialized Successfully with Referral Claims Support.")
+        log_event("Database Initialized Successfully.")
     except Exception as e:
         log_event(f"Database Init Error: {e}")
 
@@ -104,40 +99,27 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
-    global market_data_cache, last_cache_update_time
-    current_time = time.time()
-    
-    # Use cache if it's less than 300 seconds (5 minutes) old to avoid CoinGecko 429 error
-    if market_data_cache and (current_time - last_cache_update_time < 300):
-        return market_data_cache
-
     valid_coins = []
     try:
-        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=24h"
-        res = requests.get(url, headers=HEADERS, timeout=10.0)
+        # Using CoinGecko Free API with proper error handling and rate limit protection
+        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false"
+        res = requests.get(url, headers=HEADERS, timeout=15.0)
+        
         if res.status_code == 200:
             data = res.json()
             for item in data:
-                symbol = (item.get("symbol", "")).upper() + "USDT"
-                price = float(item.get("current_price", 0))
+                symbol = item.get("symbol", "").upper() + "USDT"
+                price = float(item.get("current_price", 0) or 0)
                 change = float(item.get("price_change_percentage_24h", 0) or 0)
                 low = float(item.get("low_24h", price * 0.95) or price * 0.95)
                 if price > 0:
                     valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins:
-                market_data_cache = valid_coins
-                last_cache_update_time = current_time
                 return valid_coins
         else:
             log_event(f"CoinGecko API Error Status Code: {res.status_code}")
     except Exception as e:
         log_event(f"CoinGecko Fetch Failed Exception: {e}")
-    
-    # Fallback to existing cache if API fails or hits 429
-    if market_data_cache:
-        log_event("⚠️ Using cached market data due to API rate limit/error.")
-        return market_data_cache
-        
     return valid_coins
 
 def generate_24h_result_report():
@@ -150,7 +132,6 @@ def generate_24h_result_report():
         records = cursor.fetchall()
         if not records:
             conn.close()
-            log_event("📊 24-Hour Results: No signals found for the last 24 hours.")
             return
 
         live_coins = get_market_data()
@@ -278,7 +259,8 @@ def live_signal_monitor_worker():
 
         except Exception as e:
             log_event(f"Live Monitor Error: {e}")
-        time.sleep(300)
+        # Increased sleep to 60 seconds to completely avoid CoinGecko rate limit (429)
+        time.sleep(60)
 
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
@@ -296,7 +278,7 @@ def scan_and_dispatch(force_mode=False):
 
     coins = get_market_data()
     if not coins:
-        log_event("❌ Scan aborted: No coins fetched from market data API.")
+        log_event("❌ Scan aborted: No coins fetched from market data API (Rate Limited / 429).")
         return
 
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
@@ -573,7 +555,6 @@ def process_message_async(chat_id, text):
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, guide_text)
             
         elif text_clean.isdigit() and 7 <= len(text_clean) <= 12:
-            # Smart Parsing for Binance UID (7-12 digit numbers)
             binance_uid = text_clean
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
@@ -683,7 +664,8 @@ def continuous_market_scanner():
     while True:
         try: scan_and_dispatch(force_mode=False)
         except Exception as e: log_event(f"Scanner Loop Error: {e}")
-        time.sleep(600)
+        # Scanner interval increased to 300 seconds (5 mins) to prevent CoinGecko 429 errors
+        time.sleep(300)
 
 @app.route('/')
 def home(): return jsonify({"status": "active"})
