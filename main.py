@@ -39,6 +39,10 @@ last_reset_day = datetime.now(IST).day
 last_free_dispatch_time = 0
 last_vip_dispatch_time = 0
 
+# Cache variables to prevent CoinGecko 429 Rate Limit Errors
+market_data_cache = []
+last_cache_update_time = 0
+
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {message}"
@@ -100,9 +104,15 @@ def format_price(val):
     else: return f"{val:.8f}"
 
 def get_market_data():
+    global market_data_cache, last_cache_update_time
+    current_time = time.time()
+    
+    # Use cache if it's less than 300 seconds (5 minutes) old to avoid CoinGecko 429 error
+    if market_data_cache and (current_time - last_cache_update_time < 300):
+        return market_data_cache
+
     valid_coins = []
     try:
-        # CoinGecko API integration (Replaced Binance API to avoid 451 geo-block error)
         url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=24h"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
@@ -114,11 +124,20 @@ def get_market_data():
                 low = float(item.get("low_24h", price * 0.95) or price * 0.95)
                 if price > 0:
                     valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
-            if valid_coins: return valid_coins
+            if valid_coins:
+                market_data_cache = valid_coins
+                last_cache_update_time = current_time
+                return valid_coins
         else:
             log_event(f"CoinGecko API Error Status Code: {res.status_code}")
     except Exception as e:
         log_event(f"CoinGecko Fetch Failed Exception: {e}")
+    
+    # Fallback to existing cache if API fails or hits 429
+    if market_data_cache:
+        log_event("⚠️ Using cached market data due to API rate limit/error.")
+        return market_data_cache
+        
     return valid_coins
 
 def generate_24h_result_report():
