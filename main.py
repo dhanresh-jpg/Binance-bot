@@ -98,12 +98,14 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
+# Multi-API Fallback System (Primary Binance + Standby Backup APIs)
 def get_market_data():
     valid_coins = []
+    
+    # 1. Primary API: Binance Public 24hr Ticker
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
-        res = requests.get(url, headers=HEADERS, timeout=15.0)
-        
+        res = requests.get(url, headers=HEADERS, timeout=10.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
@@ -117,9 +119,30 @@ def get_market_data():
             if valid_coins:
                 return valid_coins
         else:
-            log_event(f"Binance API Error Status Code: {res.status_code}")
+            log_event(f"Primary Binance API Warning Status: {res.status_code}. Trying Standby API...")
     except Exception as e:
-        log_event(f"Binance Fetch Failed Exception: {e}")
+        log_event(f"Primary Binance API Exception: {e}. Switching to Standby API...")
+
+    # 2. Standby API 1: Binance Alternative Endpoint / Backup Public URL
+    try:
+        backup_url = "https://data-api.binance.vision/api/v3/ticker/24hr"
+        res = requests.get(backup_url, headers=HEADERS, timeout=10.0)
+        if res.status_code == 200:
+            data = res.json()
+            for item in data:
+                symbol = item.get("symbol", "")
+                if symbol.endswith("USDT"):
+                    price = float(item.get("lastPrice", 0) or 0)
+                    change = float(item.get("priceChangePercent", 0) or 0)
+                    low = float(item.get("lowPrice", price * 0.95) or price * 0.95)
+                    if price > 0:
+                        valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+            if valid_coins:
+                log_event("⚠️ Successfully fetched market data using Standby Binance API endpoint!")
+                return valid_coins
+    except Exception as e:
+        log_event(f"Standby API Exception: {e}")
+
     return valid_coins
 
 def generate_24h_result_report():
@@ -277,7 +300,7 @@ def scan_and_dispatch(force_mode=False):
 
     coins = get_market_data()
     if not coins:
-        log_event("❌ Scan aborted: No coins fetched from Binance API.")
+        log_event("❌ Scan aborted: No coins fetched from APIs.")
         return
 
     coin_index = (vip_signals_today + free_signals_today) % len(coins)
