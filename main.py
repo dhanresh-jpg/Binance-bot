@@ -102,10 +102,10 @@ def format_price(val):
 def get_market_data():
     valid_coins = []
     
-    # 1. Primary API: Binance Public 24hr Ticker
+    # Source 1: Binance Direct API
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
-        res = requests.get(url, headers=HEADERS, timeout=10.0)
+        res = requests.get(url, headers=HEADERS, timeout=6.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
@@ -119,14 +119,14 @@ def get_market_data():
             if valid_coins:
                 return valid_coins
         else:
-            log_event(f"Primary Binance API Warning Status: {res.status_code}. Trying Standby API...")
+            log_event(f"Primary Binance API Warning Status: {res.status_code}. Trying Standby APIs...")
     except Exception as e:
-        log_event(f"Primary Binance API Exception: {e}. Switching to Standby API...")
+        log_event(f"Primary Binance API Exception: {e}")
 
-    # 2. Standby API 1: Binance Alternative Endpoint / Backup Public URL
+    # Source 2: Binance US / Vision Standby API
     try:
-        backup_url = "https://data-api.binance.vision/api/v3/ticker/24hr"
-        res = requests.get(backup_url, headers=HEADERS, timeout=10.0)
+        backup_url = "https://api.binance.us/api/v3/ticker/24hr"
+        res = requests.get(backup_url, headers=HEADERS, timeout=6.0)
         if res.status_code == 200:
             data = res.json()
             for item in data:
@@ -138,11 +138,32 @@ def get_market_data():
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins:
-                log_event("⚠️ Successfully fetched market data using Standby Binance API endpoint!")
+                log_event("⚠️ Successfully fetched market data via Binance.US Standby API!")
                 return valid_coins
     except Exception as e:
-        log_event(f"Standby API Exception: {e}")
+        log_event(f"Standby Binance API Exception: {e}")
 
+    # Source 3: CryptoCompare API (Bypasses Geoblocking Completely)
+    try:
+        cc_url = "https://min-api.cryptocompare.com/data/top/mktcapfull?limit=50&tsym=USDT"
+        res = requests.get(cc_url, headers=HEADERS, timeout=8.0)
+        if res.status_code == 200:
+            raw_data = res.json().get("Data", [])
+            for item in raw_data:
+                raw_info = item.get("RAW", {}).get("USDT", {})
+                symbol = raw_info.get("FROMSYMBOL", "") + "USDT"
+                price = float(raw_info.get("PRICE", 0) or 0)
+                change = float(raw_info.get("CHANGEPCT24HOUR", 0) or 0)
+                low = float(raw_info.get("LOW24HOUR", price * 0.95) or price * 0.95)
+                if price > 0:
+                    valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
+            if valid_coins:
+                log_event("🚀 Successfully fetched market data via CryptoCompare Fallback API!")
+                return valid_coins
+    except Exception as e:
+        log_event(f"CryptoCompare Fallback API Exception: {e}")
+
+    log_event("❌ All Market Data APIs failed.")
     return valid_coins
 
 def generate_24h_result_report():
