@@ -98,6 +98,7 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
+# Multi-API Fallback System (Primary Binance + Standby Backup APIs)
 def get_market_data():
     valid_coins = []
     
@@ -213,8 +214,7 @@ def live_signal_monitor_worker():
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
-            # Fetch pending and progressing signals so TP2, TP3, and SL can be tracked
-            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl, status FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
+            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
             pending_signals = cursor.fetchall()
             conn.close()
 
@@ -223,7 +223,7 @@ def live_signal_monitor_worker():
                 current_prices = {c["symbol"]: c["price"] for c in live_coins}
 
                 for sig in pending_signals:
-                    s_id, sym, entry, tp1, tp2, tp3, sl, current_status = sig
+                    s_id, sym, entry, tp1, tp2, tp3, sl = sig
                     current_p = current_prices.get(sym)
                     if not current_p: continue
 
@@ -232,31 +232,31 @@ def live_signal_monitor_worker():
                     target_str = ""
 
                     if is_long:
-                        if current_p <= sl:
-                            hit_status = "SL_HIT"
-                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
-                        elif current_status == "TP2_HIT" and current_p >= tp3:
+                        if current_p >= tp3:
                             hit_status = "TP3_HIT"
                             target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
-                        elif current_status in ("TP1_HIT", "PENDING") and current_p >= tp2:
+                        elif current_p >= tp2:
                             hit_status = "TP2_HIT"
                             target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
-                        elif current_status == "PENDING" and current_p >= tp1:
+                        elif current_p >= tp1:
                             hit_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
+                        elif current_p <= sl:
+                            hit_status = "SL_HIT"
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
                     else:
-                        if current_p >= sl:
-                            hit_status = "SL_HIT"
-                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
-                        elif current_status == "TP2_HIT" and current_p <= tp3:
+                        if current_p <= tp3:
                             hit_status = "TP3_HIT"
                             target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
-                        elif current_status in ("TP1_HIT", "PENDING") and current_p <= tp2:
+                        elif current_p <= tp2:
                             hit_status = "TP2_HIT"
                             target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
-                        elif current_status == "PENDING" and current_p <= tp1:
+                        elif current_p <= tp1:
                             hit_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
+                        elif current_p >= sl:
+                            hit_status = "SL_HIT"
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
 
                     if hit_status:
                         update_msg = (
@@ -310,7 +310,7 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # 🎯 HIGH-PROBABILITY SCALPS
+    # 🎯 HIGH-PROBABILITY SCALPS (Updated for high win-rate & tight TP1)
     if chg >= 3.0:
         signal_mode = "FUTURES SCALP LONG"
         leverage = "Cross 10x - 20x"
@@ -364,7 +364,7 @@ def scan_and_dispatch(force_mode=False):
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
-                           (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
+                          (sym, p, tp1, tp2, tp3, sl, current_time, now_str))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -585,7 +585,7 @@ def process_message_async(chat_id, text):
             cursor = conn.cursor()
             try:
                 cursor.execute("INSERT INTO referral_claims (user_id, binance_uid, status, created_date) VALUES (?, ?, 'PENDING', ?)", 
-                             (chat_id, binance_uid, now_str))
+                              (chat_id, binance_uid, now_str))
                 conn.commit()
                 conn.close()
                 
@@ -673,28 +673,44 @@ def telegram_polling_worker():
                         offset = update["update_id"] + 1
                         if "message" in update:
                             msg = update["message"]
-                            chat_id = msg.get("chat", {}).get("id")
-                            text = msg.get("text")
-                            if chat_id and text:
-                                threading.Thread(target=process_message_async, args=(chat_id, text)).start()
+                            chat_id = msg["chat"]["id"]
+                            text = msg.get("text", "").strip()
+                            if text:
+                                log_event(f"🔔 Polling Received text: '{text}' from chat_id: {chat_id}")
+                                threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         except Exception as e:
-            log_event(f"Polling Error: {e}")
-            time.sleep(5)
+            log_issue = f"🚨 Polling Loop Error: {e}"
+            log_event(log_issue)
+        time.sleep(1)
+
+def continuous_market_scanner():
+    log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
+    while True:
+        try: scan_and_dispatch(force_mode=False)
+        except Exception as e: log_event(f"Scanner Loop Error: {e}")
+        time.sleep(120)
+
+@app.route('/')
+def home(): return jsonify({"status": "active"})
+
+@app.route('/logs')
+def get_logs(): return jsonify({"logs": system_logs})
+
+@app.route('/force-signal')
+def force_signal():
+    threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
+    return jsonify({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
+
+@app.route('/force-result')
+def force_result():
+    threading.Thread(target=generate_24h_result_report, daemon=True).start()
+    return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
+
+# Background threads initialization
+threading.Thread(target=telegram_polling_worker, daemon=True).start()
+threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
+threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
 if __name__ == "__main__":
-    threading.Thread(target=telegram_polling_worker, daemon=True).start()
-    threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
-    threading.Thread(target=membership_expiry_checker, daemon=True).start()
-    
-    # Background thread runner for scanning signals periodically
-    def background_scanner():
-        while True:
-            try:
-                scan_and_dispatch(force_mode=False)
-            except Exception as e:
-                log_event(f"Scanner Error: {e}")
-            time.sleep(300) # Check every 5 minutes
-
-    threading.Thread(target=background_scanner, daemon=True).start()
-
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
