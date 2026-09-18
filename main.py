@@ -104,11 +104,11 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
-# Multi-API Fallback System
+# Multi-API Fallback Engine
 def get_market_data():
     valid_coins = []
     
-    # Primary Binance API
+    # Primary Binance API Endpoint
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
@@ -129,7 +129,7 @@ def get_market_data():
     except Exception as e:
         log_event(f"Primary Binance API Exception: {e}. Switching to Standby API...")
 
-    # Standby Backup API
+    # Standby Backup API Endpoint
     try:
         backup_url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(backup_url, headers=HEADERS, timeout=10.0)
@@ -697,10 +697,9 @@ def home():
 
 @app.route('/scan', methods=['GET', 'POST'])
 def trigger_scan():
-    force_param = request.args.get('force', request.form.get('force', 'false')).lower()
+    force_param = str(request.args.get('force', request.form.get('force', 'false'))).lower()
     force = force_param in ['true', '1', 'yes']
     
-    # Run scan synchronously to verify execution during force requests
     if force:
         scan_and_dispatch(force_mode=True)
         return jsonify({"message": "Force scan completed and signal dispatched immediately.", "force_mode": True})
