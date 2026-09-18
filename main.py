@@ -98,11 +98,8 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
-# Multi-API Fallback System (Primary Binance + Standby Backup APIs)
 def get_market_data():
     valid_coins = []
-    
-    # 1. Primary API: Binance Public 24hr Ticker
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
@@ -118,12 +115,9 @@ def get_market_data():
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins:
                 return valid_coins
-        else:
-            log_event(f"Primary Binance API Warning Status: {res.status_code}. Trying Standby API...")
     except Exception as e:
-        log_event(f"Primary Binance API Exception: {e}. Switching to Standby API...")
+        log_event(f"Primary Binance API Exception: {e}")
 
-    # 2. Standby API 1: Binance Alternative Endpoint / Backup Public URL
     try:
         backup_url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(backup_url, headers=HEADERS, timeout=10.0)
@@ -138,7 +132,6 @@ def get_market_data():
                     if price > 0:
                         valid_coins.append({"symbol": symbol, "price": price, "change": change, "low": low})
             if valid_coins:
-                log_event("⚠️ Successfully fetched market data using Standby Binance API endpoint!")
                 return valid_coins
     except Exception as e:
         log_event(f"Standby API Exception: {e}")
@@ -203,7 +196,6 @@ def generate_24h_result_report():
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        log_event(f"📊 Real 24-Hour Results Published! Total: {total_signals}, Win Rate: {win_rate}%")
         conn.close()
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
@@ -214,7 +206,8 @@ def live_signal_monitor_worker():
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
+            # FIX: Fetch signals that are not yet finished (PENDING, TP1_HIT, TP2_HIT) so TP2 and TP3 can be tracked sequentially!
+            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl, status FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
             pending_signals = cursor.fetchall()
             conn.close()
 
@@ -223,42 +216,42 @@ def live_signal_monitor_worker():
                 current_prices = {c["symbol"]: c["price"] for c in live_coins}
 
                 for sig in pending_signals:
-                    s_id, sym, entry, tp1, tp2, tp3, sl = sig
+                    s_id, sym, entry, tp1, tp2, tp3, sl, current_status = sig
                     current_p = current_prices.get(sym)
                     if not current_p: continue
 
                     is_long = tp1 > entry
-                    hit_status = None
+                    new_status = None
                     target_str = ""
 
                     if is_long:
-                        if current_p >= tp3:
-                            hit_status = "TP3_HIT"
+                        if current_p >= tp3 and current_status != 'TP3_HIT':
+                            new_status = "TP3_HIT"
                             target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
-                        elif current_p >= tp2:
-                            hit_status = "TP2_HIT"
+                        elif current_p >= tp2 and current_status not in ('TP2_HIT', 'TP3_HIT'):
+                            new_status = "TP2_HIT"
                             target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
-                        elif current_p >= tp1:
-                            hit_status = "TP1_HIT"
+                        elif current_p >= tp1 and current_status not in ('TP1_HIT', 'TP2_HIT', 'TP3_HIT'):
+                            new_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
-                        elif current_p <= sl:
-                            hit_status = "SL_HIT"
+                        elif current_p <= sl and current_status not in ('TP3_HIT', 'SL_HIT'):
+                            new_status = "SL_HIT"
                             target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
                     else:
-                        if current_p <= tp3:
-                            hit_status = "TP3_HIT"
+                        if current_p <= tp3 and current_status != 'TP3_HIT':
+                            new_status = "TP3_HIT"
                             target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
-                        elif current_p <= tp2:
-                            hit_status = "TP2_HIT"
+                        elif current_p <= tp2 and current_status not in ('TP2_HIT', 'TP3_HIT'):
+                            new_status = "TP2_HIT"
                             target_str = f"🎯 Target 2 Hit (${format_price(tp2)})!"
-                        elif current_p <= tp1:
-                            hit_status = "TP1_HIT"
+                        elif current_p <= tp1 and current_status not in ('TP1_HIT', 'TP2_HIT', 'TP3_HIT'):
+                            new_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
-                        elif current_p >= sl:
-                            hit_status = "SL_HIT"
+                        elif current_p >= sl and current_status not in ('TP3_HIT', 'SL_HIT'):
+                            new_status = "SL_HIT"
                             target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
 
-                    if hit_status:
+                    if new_status:
                         update_msg = (
                             f"🔔 <b>LIVE SIGNAL UPDATE</b> 🔔\n"
                             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -275,10 +268,9 @@ def live_signal_monitor_worker():
 
                         conn = sqlite3.connect("vip_members.db", timeout=10.0)
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
+                        cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (new_status, s_id))
                         conn.commit()
                         conn.close()
-                        log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
 
         except Exception as e:
             log_event(f"Live Monitor Error: {e}")
@@ -310,28 +302,19 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # 🎯 UPDATED TARGETS & SL CALCULATIONS (Optimized Risk-to-Reward Ratio)
+    # Original target formulas retained
     if chg >= 3.0:
         signal_mode = "FUTURES SCALP LONG"
         leverage = "Cross 10x - 20x"
-        tp1 = p * 1.012  # +1.2%
-        tp2 = p * 1.025  # +2.5%
-        tp3 = p * 1.045  # +4.5%
-        sl  = p * 0.982  # -1.8%
+        tp1, tp2, tp3, sl = p * 1.006, p * 1.015, p * 1.030, p * 0.940
     elif chg <= -3.0:
         signal_mode = "FUTURES SCALP SHORT"
         leverage = "Cross 10x - 20x"
-        tp1 = p * 0.988  # -1.2%
-        tp2 = p * 0.975  # -2.5%
-        tp3 = p * 0.955  # -4.5%
-        sl  = p * 1.018  # +1.8%
+        tp1, tp2, tp3, sl = p * 0.994, p * 0.985, p * 0.970, p * 1.060
     else:
         signal_mode = "SPOT QUICK SCALP"
         leverage = "Spot (1x)"
-        tp1 = p * 1.015  # +1.5%
-        tp2 = p * 1.030  # +3.0%
-        tp3 = p * 1.060  # +6.0%
-        sl  = p * 0.975  # -2.5%
+        tp1, tp2, tp3, sl = p * 1.008, p * 1.020, p * 1.040, p * 0.920
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
@@ -359,13 +342,11 @@ def scan_and_dispatch(force_mode=False):
         dispatch_vip_signal(setup)
         vip_signals_today += 1
         last_vip_dispatch_time = current_time
-        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
 
     if should_send_free:
         dispatch_free_signal(setup)
         free_signals_today += 1
         last_free_dispatch_time = current_time
-        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
         try:
@@ -442,11 +423,8 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
     try:
         res = requests.post(url, json=payload, timeout=10.0)
         data = res.json()
-        if not data.get("ok", False):
-            log_event(f"❌ Telegram Send FAILED for {chat_id}: Code {res.status_code} - {data.get('description')}")
         return data.get("ok", False)
     except Exception as e:
-        log_event(f"🚨 Telegram Send Exception Error: {e}")
         return False
 
 def kick_telegram_user(chat_id, user_id):
@@ -510,7 +488,6 @@ def membership_expiry_checker():
                 u_id = row[0]
                 success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
                 if success:
-                    log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
                     send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP Membership has Expired!</b>\n\nYou have been removed from the VIP channel. Please renew your plan using the bot menu.")
                 
                 cursor.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
@@ -522,7 +499,6 @@ def membership_expiry_checker():
 
 def process_message_async(chat_id, text):
     try:
-        log_event(f"📩 Processing message from {chat_id}: {text}")
         text_clean = text.strip()
 
         if text_clean.startswith("/start"):
@@ -606,7 +582,6 @@ def process_message_async(chat_id, text):
                     "🎉 We are verifying your signup through our referral link. Once confirmed, your 1 month Free VIP access will be activated!"
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_claim_msg)
-                log_event(f"🎁 Referral claim submitted by user {chat_id} with UID {binance_uid}")
             except sqlite3.IntegrityError:
                 conn.close()
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ <b>Error:</b> This Binance UID has already been submitted or claimed!")
@@ -685,11 +660,9 @@ def telegram_polling_worker():
                             chat_id = msg["chat"]["id"]
                             text = msg.get("text", "").strip()
                             if text:
-                                log_event(f"🔔 Polling Received text: '{text}' from chat_id: {chat_id}")
                                 threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         except Exception as e:
-            log_issue = f"🚨 Polling Loop Error: {e}"
-            log_event(log_issue)
+            log_event(f"🚨 Polling Loop Error: {e}")
         time.sleep(1)
 
 def continuous_market_scanner():
