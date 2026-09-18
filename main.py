@@ -310,19 +310,28 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # 🎯 HIGH-PROBABILITY SCALPS (Updated for high win-rate & tight TP1)
+    # 🎯 UPDATED TARGETS & SL CALCULATIONS (Optimized Risk-to-Reward Ratio)
     if chg >= 3.0:
         signal_mode = "FUTURES SCALP LONG"
         leverage = "Cross 10x - 20x"
-        tp1, tp2, tp3, sl = p * 1.006, p * 1.015, p * 1.030, p * 0.940
+        tp1 = p * 1.012  # +1.2%
+        tp2 = p * 1.025  # +2.5%
+        tp3 = p * 1.045  # +4.5%
+        sl  = p * 0.982  # -1.8%
     elif chg <= -3.0:
         signal_mode = "FUTURES SCALP SHORT"
         leverage = "Cross 10x - 20x"
-        tp1, tp2, tp3, sl = p * 0.994, p * 0.985, p * 0.970, p * 1.060
+        tp1 = p * 0.988  # -1.2%
+        tp2 = p * 0.975  # -2.5%
+        tp3 = p * 0.955  # -4.5%
+        sl  = p * 1.018  # +1.8%
     else:
         signal_mode = "SPOT QUICK SCALP"
         leverage = "Spot (1x)"
-        tp1, tp2, tp3, sl = p * 1.008, p * 1.020, p * 1.040, p * 0.920
+        tp1 = p * 1.015  # +1.5%
+        tp2 = p * 1.030  # +3.0%
+        tp3 = p * 1.060  # +6.0%
+        sl  = p * 0.975  # -2.5%
 
     rsi_est = round(50.0 + (chg * 0.6), 1)
     if rsi_est > 80: rsi_est = 78.4
