@@ -47,9 +47,13 @@ def log_event(message):
         system_logs.pop(0)
     print(entry)
 
+def get_db_connection():
+    conn = sqlite3.connect("vip_members.db", timeout=20.0, check_same_thread=False)
+    return conn
+
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
@@ -80,7 +84,7 @@ init_db()
 
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
@@ -149,7 +153,7 @@ def get_market_data():
 
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -214,7 +218,7 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
             pending_signals = cursor.fetchall()
@@ -275,7 +279,7 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                        conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
                         conn.commit()
@@ -348,20 +352,20 @@ def scan_and_dispatch(force_mode=False):
             should_send_free = True
 
     if should_send_vip:
-        dispatch_vip_signal(setup)
-        vip_signals_today += 1
-        last_vip_dispatch_time = current_time
-        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
+        if dispatch_vip_signal(setup):
+            vip_signals_today += 1
+            last_vip_dispatch_time = current_time
+            log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
 
     if should_send_free:
-        dispatch_free_signal(setup)
-        free_signals_today += 1
-        last_free_dispatch_time = current_time
-        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
+        if dispatch_free_signal(setup):
+            free_signals_today += 1
+            last_free_dispatch_time = current_time
+            log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
@@ -491,7 +495,7 @@ def membership_expiry_checker():
     log_event("⏳ Expiry & Auto-Kick Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
@@ -582,7 +586,7 @@ def process_message_async(chat_id, text):
             binance_uid = text_clean
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute("INSERT INTO referral_claims (user_id, binance_uid, status, created_date) VALUES (?, ?, 'PENDING', ?)", 
@@ -605,7 +609,7 @@ def process_message_async(chat_id, text):
         
         else:
             txid = text_clean
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
@@ -693,9 +697,16 @@ def home():
 
 @app.route('/scan', methods=['GET', 'POST'])
 def trigger_scan():
-    force = request.args.get('force', 'false').lower() == 'true'
-    threading.Thread(target=scan_and_dispatch, args=(force,), daemon=True).start()
-    return jsonify({"message": "Scan triggered successfully", "force_mode": force})
+    force_param = request.args.get('force', request.form.get('force', 'false')).lower()
+    force = force_param in ['true', '1', 'yes']
+    
+    # Run scan synchronously to verify execution during force requests
+    if force:
+        scan_and_dispatch(force_mode=True)
+        return jsonify({"message": "Force scan completed and signal dispatched immediately.", "force_mode": True})
+    else:
+        threading.Thread(target=scan_and_dispatch, args=(False,), daemon=True).start()
+        return jsonify({"message": "Regular scan triggered successfully.", "force_mode": False})
 
 @app.route('/logs', methods=['GET'])
 def get_logs():
