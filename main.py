@@ -6,7 +6,6 @@ import threading
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 
-# Environment Variables & Config
 FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
 
@@ -43,17 +42,12 @@ def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
     entry = f"[{timestamp}] {message}"
     system_logs.append(entry)
-    if len(system_logs) > 200: 
-        system_logs.pop(0)
+    if len(system_logs) > 200: system_logs.pop(0)
     print(entry)
-
-def get_db_connection():
-    conn = sqlite3.connect("vip_members.db", timeout=20.0, check_same_thread=False)
-    return conn
 
 def init_db():
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY, expiry_date TEXT, status TEXT)')
         cursor.execute('CREATE TABLE IF NOT EXISTS processed_txids (txid TEXT PRIMARY KEY)')
@@ -84,7 +78,7 @@ init_db()
 
 def cleanup_3day_old_data():
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("DELETE FROM signal_history WHERE created_date < ?", (three_days_ago,))
@@ -104,11 +98,11 @@ def format_price(val):
     elif val >= 0.001: return f"{val:.6f}"
     else: return f"{val:.8f}"
 
-# Multi-API Fallback Engine
+# Multi-API Fallback System (Primary Binance + Standby Backup APIs)
 def get_market_data():
     valid_coins = []
     
-    # Primary Binance API Endpoint
+    # 1. Primary API: Binance Public 24hr Ticker
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
         res = requests.get(url, headers=HEADERS, timeout=10.0)
@@ -129,7 +123,7 @@ def get_market_data():
     except Exception as e:
         log_event(f"Primary Binance API Exception: {e}. Switching to Standby API...")
 
-    # Standby Backup API Endpoint
+    # 2. Standby API 1: Binance Alternative Endpoint / Backup Public URL
     try:
         backup_url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(backup_url, headers=HEADERS, timeout=10.0)
@@ -153,7 +147,7 @@ def get_market_data():
 
 def generate_24h_result_report():
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -218,7 +212,7 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = get_db_connection()
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
             pending_signals = cursor.fetchall()
@@ -279,7 +273,7 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        conn = get_db_connection()
+                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
                         conn.commit()
@@ -316,6 +310,7 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
+    # 🎯 HIGH-PROBABILITY SCALPS (Updated for high win-rate & tight TP1)
     if chg >= 3.0:
         signal_mode = "FUTURES SCALP LONG"
         leverage = "Cross 10x - 20x"
@@ -352,20 +347,20 @@ def scan_and_dispatch(force_mode=False):
             should_send_free = True
 
     if should_send_vip:
-        if dispatch_vip_signal(setup):
-            vip_signals_today += 1
-            last_vip_dispatch_time = current_time
-            log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
+        dispatch_vip_signal(setup)
+        vip_signals_today += 1
+        last_vip_dispatch_time = current_time
+        log_event(f"💎 VIP Signal Sent ({vip_signals_today}/36 today) for {sym}")
 
     if should_send_free:
-        if dispatch_free_signal(setup):
-            free_signals_today += 1
-            last_free_dispatch_time = current_time
-            log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
+        dispatch_free_signal(setup)
+        free_signals_today += 1
+        last_free_dispatch_time = current_time
+        log_event(f"📢 Free Signal Sent ({free_signals_today}/6 today) for {sym}")
 
     if should_send_vip or should_send_free:
         try:
-            conn = get_db_connection()
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO signal_history (symbol, entry_price, tp1, tp2, tp3, sl, timestamp, created_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')", 
@@ -463,7 +458,7 @@ def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
             return False, 0, "Invalid TXID format or Blockchain API error."
         
         data = res.json()
-        if not data or ("contractRet" in data and data["contractRet"] != "SUCCESS"):
+        if not data or "contractRet" in data and data["contractRet"] != "SUCCESS":
             return False, 0, "Transaction failed, pending, or not found on blockchain."
             
         trc20_transfers = data.get("trc20TransferInfo", [])
@@ -495,7 +490,7 @@ def membership_expiry_checker():
     log_event("⏳ Expiry & Auto-Kick Worker Started...")
     while True:
         try:
-            conn = get_db_connection()
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
@@ -586,7 +581,7 @@ def process_message_async(chat_id, text):
             binance_uid = text_clean
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
-            conn = get_db_connection()
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             try:
                 cursor.execute("INSERT INTO referral_claims (user_id, binance_uid, status, created_date) VALUES (?, ?, 'PENDING', ?)", 
@@ -609,7 +604,7 @@ def process_message_async(chat_id, text):
         
         else:
             txid = text_clean
-            conn = get_db_connection()
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
@@ -672,53 +667,50 @@ def telegram_polling_worker():
             url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
             res = requests.get(url, timeout=35.0)
             if res.status_code == 200:
-                updates = res.json().get("result", [])
-                for update in updates:
-                    offset = update["update_id"] + 1
-                    message = update.get("message", {})
-                    chat_id = message.get("chat", {}).get("id")
-                    text = message.get("text", "")
-                    
-                    if chat_id and text:
-                        threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
+                data = res.json()
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        if "message" in update:
+                            msg = update["message"]
+                            chat_id = msg["chat"]["id"]
+                            text = msg.get("text", "").strip()
+                            if text:
+                                log_event(f"🔔 Polling Received text: '{text}' from chat_id: {chat_id}")
+                                threading.Thread(target=process_message_async, args=(chat_id, text), daemon=True).start()
         except Exception as e:
-            log_event(f"Polling Error: {e}")
-            time.sleep(5)
+            log_issue = f"🚨 Polling Loop Error: {e}"
+            log_event(log_issue)
+        time.sleep(1)
 
-# Flask Web Endpoints
+def continuous_market_scanner():
+    log_event("🚀 Engine Active (Free: 6/day, VIP: 12-36/day)...")
+    while True:
+        try: scan_and_dispatch(force_mode=False)
+        except Exception as e: log_event(f"Scanner Loop Error: {e}")
+        time.sleep(120)
+
 @app.route('/')
-def home():
-    return jsonify({
-        "status": "Online",
-        "system": "Binance VIP Signal Engine",
-        "vip_signals_today": vip_signals_today,
-        "free_signals_today": free_signals_today
-    })
+def home(): return jsonify({"status": "active"})
 
-@app.route('/scan', methods=['GET', 'POST'])
-def trigger_scan():
-    force_param = str(request.args.get('force', request.form.get('force', 'false'))).lower()
-    force = force_param in ['true', '1', 'yes']
-    
-    if force:
-        scan_and_dispatch(force_mode=True)
-        return jsonify({"message": "Force scan completed and signal dispatched immediately.", "force_mode": True})
-    else:
-        threading.Thread(target=scan_and_dispatch, args=(False,), daemon=True).start()
-        return jsonify({"message": "Regular scan triggered successfully.", "force_mode": False})
+@app.route('/logs')
+def get_logs(): return jsonify({"logs": system_logs})
 
-@app.route('/logs', methods=['GET'])
-def get_logs():
-    return jsonify({"logs": system_logs})
+@app.route('/force-signal')
+def force_signal():
+    threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
+    return jsonify({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
 
-# Background Workers Initialization
-def start_background_workers():
-    threading.Thread(target=telegram_polling_worker, daemon=True).start()
-    threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
-    threading.Thread(target=membership_expiry_checker, daemon=True).start()
+@app.route('/force-result')
+def force_result():
+    threading.Thread(target=generate_24h_result_report, daemon=True).start()
+    return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
 
-start_background_workers()
+# Background threads initialization
+threading.Thread(target=telegram_polling_worker, daemon=True).start()
+threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
+threading.Thread(target=membership_expiry_checker, daemon=True).start()
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
