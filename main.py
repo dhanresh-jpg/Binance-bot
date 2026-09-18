@@ -2,9 +2,10 @@ import time
 import requests
 import sqlite3
 import os
+import json
 import threading
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
 
 FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
 VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
@@ -37,6 +38,11 @@ vip_signals_today = 0
 last_reset_day = datetime.now(IST).day
 last_free_dispatch_time = 0
 last_vip_dispatch_time = 0
+
+def json_utf8_response(data):
+    """Helper to return JSON with properly decoded UTF-8 emojis instead of unicode escape sequences."""
+    json_str = json.dumps(data, ensure_ascii=False, indent=2)
+    return Response(json_str, content_type='application/json; charset=utf-8')
 
 def log_event(message):
     timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
@@ -310,7 +316,7 @@ def scan_and_dispatch(force_mode=False):
     sym = selected_coin["symbol"]
     chg = selected_coin["change"]
     
-    # 🎯 HIGH-PROBABILITY SCALPS (Updated for high win-rate & tight TP1)
+    # 🎯 HIGH-PROBABILITY SCALPS
     if chg >= 3.0:
         signal_mode = "FUTURES SCALP LONG"
         leverage = "Cross 10x - 20x"
@@ -693,20 +699,22 @@ def continuous_market_scanner():
         time.sleep(120)
 
 @app.route('/')
-def home(): return jsonify({"status": "active"})
+def home(): 
+    return json_utf8_response({"status": "active"})
 
 @app.route('/logs')
-def get_logs(): return jsonify({"logs": system_logs})
+def get_logs(): 
+    return json_utf8_response({"logs": system_logs})
 
 @app.route('/force-signal')
 def force_signal():
     threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
-    return jsonify({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
+    return json_utf8_response({"status": "success", "message": "Force Scan Triggered! Check /logs for details."})
 
 @app.route('/force-result')
 def force_result():
     threading.Thread(target=generate_24h_result_report, daemon=True).start()
-    return jsonify({"status": "success", "message": "24h Result Report Triggered!"})
+    return json_utf8_response({"status": "success", "message": "24h Result Report Triggered!"})
 
 # Background threads initialization
 threading.Thread(target=telegram_polling_worker, daemon=True).start()
