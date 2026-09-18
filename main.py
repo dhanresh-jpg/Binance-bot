@@ -304,23 +304,24 @@ def scan_and_dispatch(force_mode=False):
         return
 
     # Fetch active symbols from database to prevent repetition of active signals (PENDING, TP1_HIT, TP2_HIT)
-    try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
-        active_symbols = {row[0] for row in cursor.fetchall()}
-        conn.close()
-    except Exception as e:
-        log_event(f"Active Symbols Fetch Error: {e}")
-        active_symbols = set()
+    active_symbols = set()
+    if not force_mode:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT symbol FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
+            active_symbols = {row[0] for row in cursor.fetchall()}
+            conn.close()
+        except Exception as e:
+            log_event(f"Active Symbols Fetch Error: {e}")
 
-    # Find a coin that is not currently active
+    # Find a coin that is not currently active (or pick any if force_mode is True)
     selected_coin = None
     total_coins = len(coins)
     for i in range(total_coins):
         coin_index = (vip_signals_today + free_signals_today + i) % total_coins
         candidate = coins[coin_index]
-        if candidate["symbol"] not in active_symbols:
+        if force_mode or candidate["symbol"] not in active_symbols:
             selected_coin = candidate
             break
 
