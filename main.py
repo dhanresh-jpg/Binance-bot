@@ -214,15 +214,15 @@ def live_signal_monitor_worker():
         try:
             conn = sqlite3.connect("vip_members.db", timeout=10.0)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
-            pending_signals = cursor.fetchall()
+            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
+            active_signals = cursor.fetchall()
             conn.close()
 
-            if pending_signals:
+            if active_signals:
                 live_coins = get_market_data()
                 current_prices = {c["symbol"]: c["price"] for c in live_coins}
 
-                for sig in pending_signals:
+                for sig in active_signals:
                     s_id, sym, entry, tp1, tp2, tp3, sl = sig
                     current_p = current_prices.get(sym)
                     if not current_p: continue
@@ -303,8 +303,30 @@ def scan_and_dispatch(force_mode=False):
         log_event("❌ Scan aborted: No coins fetched from APIs.")
         return
 
-    coin_index = (vip_signals_today + free_signals_today) % len(coins)
-    selected_coin = coins[coin_index]
+    # Fetch active symbols from database to prevent repetition of active signals (PENDING, TP1_HIT, TP2_HIT)
+    try:
+        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT symbol FROM signal_history WHERE status IN ('PENDING', 'TP1_HIT', 'TP2_HIT')")
+        active_symbols = {row[0] for row in cursor.fetchall()}
+        conn.close()
+    except Exception as e:
+        log_event(f"Active Symbols Fetch Error: {e}")
+        active_symbols = set()
+
+    # Find a coin that is not currently active
+    selected_coin = None
+    total_coins = len(coins)
+    for i in range(total_coins):
+        coin_index = (vip_signals_today + free_signals_today + i) % total_coins
+        candidate = coins[coin_index]
+        if candidate["symbol"] not in active_symbols:
+            selected_coin = candidate
+            break
+
+    if not selected_coin:
+        log_event("❌ Scan aborted: All available coins have active signals.")
+        return
     
     p = selected_coin["price"]
     sym = selected_coin["symbol"]
