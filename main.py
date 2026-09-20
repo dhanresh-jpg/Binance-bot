@@ -172,43 +172,38 @@ def generate_24h_result_report():
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
-        cursor.execute("SELECT DISTINCT symbol, entry_price, tp1, sl FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+        # Status column fetch karna zaroori hai
+        cursor.execute("SELECT symbol, entry_price, tp1, sl, status FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
         records = cursor.fetchall()
         if not records:
             conn.close()
             return
 
-        live_coins = get_market_data()
-        current_prices = {c["symbol"]: c["price"] for c in live_coins}
-
-        total_signals = 0
+        total_signals = len(records)
         wins = 0
         losses = 0
+        pending = 0
 
         for rec in records:
-            sym, entry, tp1, sl = rec
-            current_p = current_prices.get(sym)
-            if not current_p: continue
-                
-            total_signals += 1
-            if tp1 > entry:
-                if current_p >= tp1: wins += 1
-                elif current_p <= sl: losses += 1
-                else:
-                    if current_p > entry: wins += 1
-                    else: losses += 1
+            sym, entry, tp1, sl, status = rec
+            
+            # Status ke aadhar par categorization
+            if status in ('TP1_HIT', 'TP2_HIT', 'TP3_HIT'):
+                wins += 1
+            elif status == 'SL_HIT':
+                losses += 1
             else:
-                if current_p <= tp1: wins += 1
-                elif current_p >= sl: losses += 1
-                else:
-                    if current_p < entry: wins += 1
-                    else: losses += 1
+                pending += 1
 
         if total_signals == 0:
             conn.close()
             return
 
-        win_rate = round((wins / total_signals) * 100, 1)
+        decided_trades = wins + losses
+        if decided_trades > 0:
+            win_rate = round((wins / decided_trades) * 100, 1)
+        else:
+            win_rate = 0.0
 
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
@@ -216,6 +211,7 @@ def generate_24h_result_report():
             f"✅ <b>Total Unique Signals</b>: {total_signals}\n"
             f"🎯 <b>Targets Hit / Profit Trades</b>: {wins}\n"
             f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
+            f"⏳ <b>Pending Signals</b>: {pending}\n"
             f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔗 <b>Binance Referral Link:</b> {BINANCE_REF_LINK}\n"
@@ -224,11 +220,11 @@ def generate_24h_result_report():
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        log_event(f"📊 Real 24-Hour Results Published! Total: {total_signals}, Win Rate: {win_rate}%")
+        log_event(f"📊 Correct 24-Hour Results Published! Total: {total_signals}, Wins: {wins}, Losses: {losses}, Pending: {pending}, Win Rate: {win_rate}%")
         conn.close()
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
-
+        
 def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
