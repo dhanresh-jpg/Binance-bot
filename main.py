@@ -170,10 +170,11 @@ def generate_24h_result_report():
     try:
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
-        twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
-        # Status column fetch karna zaroori hai
-        cursor.execute("SELECT symbol, entry_price, tp1, sl, status FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
+        # Exact Raat 12:00 AM IST se le kar ab tak ka data calculate karne ke liye
+        today_midnight = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute("SELECT status FROM signal_history WHERE created_date >= ?", (today_midnight,))
         records = cursor.fetchall()
         if not records:
             conn.close()
@@ -185,9 +186,7 @@ def generate_24h_result_report():
         pending = 0
 
         for rec in records:
-            sym, entry, tp1, sl, status = rec
-            
-            # Status ke aadhar par categorization
+            status = rec[0]
             if status in ('TP1_HIT', 'TP2_HIT', 'TP3_HIT'):
                 wins += 1
             elif status == 'SL_HIT':
@@ -220,10 +219,10 @@ def generate_24h_result_report():
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        log_event(f"📊 Correct 24-Hour Results Published! Total: {total_signals}, Wins: {wins}, Losses: {losses}, Pending: {pending}, Win Rate: {win_rate}%")
+        log_event(f"📊 24-Hour Midnight Report Published! Total: {total_signals}, Wins: {wins}, Losses: {losses}, Pending: {pending}, Win Rate: {win_rate}%")
         conn.close()
     except Exception as e:
-        log_event(f"Result Generation Error: {e}")
+        log_event(f"Result Generation Error: {e}")  
         
 def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
