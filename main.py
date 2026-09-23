@@ -171,15 +171,15 @@ def generate_24h_result_report():
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
         
-        # Exact Raat 12:00 AM IST se le kar ab tak ka data calculate karne ke liye
-        today_midnight = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        # Exact 24 Hours Lookback Filter (ISO String & Timestamp Both)
+        now_dt = datetime.now(IST)
+        twenty_four_hrs_ago_dt = now_dt - timedelta(hours=24)
+        twenty_four_hrs_ago_str = twenty_four_hrs_ago_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        cursor.execute("SELECT status FROM signal_history WHERE created_date >= ?", (today_midnight,))
+        cursor.execute("SELECT status FROM signal_history WHERE created_date >= ? OR timestamp >= ?", 
+                       (twenty_four_hrs_ago_str, twenty_four_hrs_ago_dt.timestamp()))
         records = cursor.fetchall()
-        if not records:
-            conn.close()
-            return
-
+        
         total_signals = len(records)
         wins = 0
         losses = 0
@@ -194,15 +194,8 @@ def generate_24h_result_report():
             else:
                 pending += 1
 
-        if total_signals == 0:
-            conn.close()
-            return
-
         decided_trades = wins + losses
-        if decided_trades > 0:
-            win_rate = round((wins / decided_trades) * 100, 1)
-        else:
-            win_rate = 0.0
+        win_rate = round((wins / decided_trades) * 100, 1) if decided_trades > 0 else 0.0
 
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
@@ -217,13 +210,17 @@ def generate_24h_result_report():
             f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
         )
 
+        # Telegram Send
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        log_event(f"📊 24-Hour Midnight Report Published! Total: {total_signals}, Wins: {wins}, Losses: {losses}, Pending: {pending}, Win Rate: {win_rate}%")
-        conn.close()
-    except Exception as e:
-        log_event(f"Result Generation Error: {e}")  
         
+        log_event(f"📊 24h Report Sent! Signals: {total_signals}, Wins: {wins}, Losses: {losses}, WinRate: {win_rate}%")
+        conn.close()
+        return report_msg
+    except Exception as e:
+        log_event(f"Result Generation Error: {e}")
+        return f"Error: {e}"
+
 def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
