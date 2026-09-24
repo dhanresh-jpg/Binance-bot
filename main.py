@@ -170,30 +170,49 @@ def generate_24h_result_report():
     try:
         conn = sqlite3.connect("vip_members.db", timeout=10.0)
         cursor = conn.cursor()
+        twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         
-        now_dt = datetime.now(IST)
-        twenty_four_hrs_ago_dt = now_dt - timedelta(hours=24)
-        twenty_four_hrs_ago_str = twenty_four_hrs_ago_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-        cursor.execute("SELECT status FROM signal_history WHERE created_date >= ? OR timestamp >= ?", 
-                       (twenty_four_hrs_ago_str, twenty_four_hrs_ago_dt.timestamp()))
+        # Status column fetch karna zaroori hai
+        cursor.execute("SELECT symbol, entry_price, tp1, sl, status FROM signal_history WHERE created_date >= ?", (twenty_four_hrs_ago,))
         records = cursor.fetchall()
-        
+        if not records:
+            conn.close()
+            return
+
+        total_signals = len(records)
         wins = 0
+        losses = 0
+        pending = 0
+
         for rec in records:
-            status = rec[0]
+            sym, entry, tp1, sl, status = rec
+            
+            # Status ke aadhar par categorization
             if status in ('TP1_HIT', 'TP2_HIT', 'TP3_HIT'):
                 wins += 1
+            elif status == 'SL_HIT':
+                losses += 1
+            else:
+                pending += 1
 
-        # Har haal mein high accuracy rate highlight karein
-        display_win_rate = "88.5"
+        if total_signals == 0:
+            conn.close()
+            return
+
+        decided_trades = wins + losses
+        if decided_trades > 0:
+            win_rate = round((wins / decided_trades) * 100, 1)
+        else:
+            win_rate = 0.0
 
         report_msg = (
             f"📊 <b>24-HOUR VIP SIGNAL RESULTS REPORT</b> 📊\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 <b>Targets Hit / Profit Trades</b>: {wins} Trades ✅\n"
-            f"🔥 <b>Win Rate Accuracy</b>: {display_win_rate}%\n"
-            f"⚡ <b>Overall Profit Status</b>: Highly Profitable\n"
+            f"✅ <b>Total Unique Signals</b>: {total_signals}\n"
+            f"🎯 <b>Targets Hit / Profit Trades</b>: {wins}\n"
+            f"⛔ <b>Stop Losses Hit</b>: {losses}\n"
+            f"⏳ <b>Pending Signals</b>: {pending}\n"
+            f"🔥 <b>Win Rate Accuracy</b>: {win_rate}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔗 <b>Binance Referral Link:</b> {BINANCE_REF_LINK}\n"
             f"💎 <b>Join VIP For Instant Signals:</b> @BinanceTop10_VIPBot"
@@ -201,16 +220,35 @@ def generate_24h_result_report():
 
         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, report_msg)
         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, report_msg)
-        
-        log_event(f"📊 24h Report Sent! Successful Wins: {wins}")
+        log_event(f"📊 Correct 24-Hour Results Published! Total: {total_signals}, Wins: {wins}, Losses: {losses}, Pending: {pending}, Win Rate: {win_rate}%")
         conn.close()
-        return report_msg
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
-        return f"Error: {e}"
+        
+def live_signal_monitor_worker():
+    log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
+    while True:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM signal_history WHERE status = 'PENDING'")
+            pending_signals = cursor.fetchall()
+            conn.close()
 
-  def live_signal_monitor_worker():                        
-   if is_long:
+            if pending_signals:
+                live_coins = get_market_data()
+                current_prices = {c["symbol"]: c["price"] for c in live_coins}
+
+                for sig in pending_signals:
+                    s_id, sym, entry, tp1, tp2, tp3, sl = sig
+                    current_p = current_prices.get(sym)
+                    if not current_p: continue
+
+                    is_long = tp1 > entry
+                    hit_status = None
+                    target_str = ""
+
+                    if is_long:
                         if current_p >= tp3:
                             hit_status = "TP3_HIT"
                             target_str = f"🚀 Target 3 Hit (${format_price(tp3)})!"
@@ -221,9 +259,8 @@ def generate_24h_result_report():
                             hit_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
                         elif current_p <= sl:
-                            # Database status Update ho jaye par Channel par Message na jaye
                             hit_status = "SL_HIT"
-                            target_str = None 
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
                     else:
                         if current_p <= tp3:
                             hit_status = "TP3_HIT"
@@ -235,12 +272,10 @@ def generate_24h_result_report():
                             hit_status = "TP1_HIT"
                             target_str = f"✅ Target 1 Hit (${format_price(tp1)})!"
                         elif current_p >= sl:
-                            # Database status Update ho jaye par Channel par Message na jaye
                             hit_status = "SL_HIT"
-                            target_str = None
+                            target_str = f"⛔ Stop Loss Hit (${format_price(sl)})!"
 
-                    # SIRF TARGET HITS PAR HI TELEGRAM PAR UPDATE MESSAGE JAYEGA
-                    if hit_status and target_str:
+                    if hit_status:
                         update_msg = (
                             f"🔔 <b>LIVE SIGNAL UPDATE</b> 🔔\n"
                             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -254,16 +289,17 @@ def generate_24h_result_report():
                         )
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
-                        log_event(f"📈 Target Hit Update Sent for {sym}: {target_str}")
 
-                    # Background Database Update
-                    if hit_status:
                         conn = sqlite3.connect("vip_members.db", timeout=10.0)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE signal_history SET status = ? WHERE id = ?", (hit_status, s_id))
                         conn.commit()
                         conn.close()
-                        
+                        log_event(f"📈 Signal Update Sent for {sym}: {target_str}")
+
+        except Exception as e:
+            log_event(f"Live Monitor Error: {e}")
+        time.sleep(60)
 
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
