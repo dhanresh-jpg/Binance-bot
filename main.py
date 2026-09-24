@@ -224,7 +224,7 @@ def generate_24h_result_report():
         conn.close()
     except Exception as e:
         log_event(f"Result Generation Error: {e}")
-        
+
 def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
