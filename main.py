@@ -1,14 +1,17 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import random
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
 import requests
 from telethon import TelegramClient
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.contacts import SearchRequest
+from telethon.tl.types import Channel, Chat
 
 # ==================== CONFIGURATION ====================
 FREE_BOT_TOKEN = os.getenv(
@@ -26,12 +29,6 @@ BINANCE_REF_LINK = "https://accounts.binance.com/register?ref=GRO_28502_IBUUM"
 # Userbot Marketing Credentials (my.telegram.org se praapt karein)
 API_ID = int(os.getenv("TELEGRAM_API_ID", "12345678"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "your_api_hash_here")
-
-TARGET_GROUPS = [
-    "crypto_discussion_chat1",
-    "binance_signals_group2",
-    "growth_community_3",
-]
 
 HEADERS = {
     "User-Agent": (
@@ -274,30 +271,67 @@ def create_promo_post():
   return random.choice(templates)
 
 
-async def start_growth_engine():
+async def auto_discover_and_market():
   await client_userbot.start()
-  log_event("🚀 Telegram Auto-Growth & Marketing Engine Started!")
-  while True:
-    for group in TARGET_GROUPS:
-      try:
-        promo_message = create_promo_post()
-        await client_userbot.send_message(
-            group, promo_message, parse_mode="html"
-        )
-        log_event(f"✅ Marketing message sent to {group}")
-        await asyncio.sleep(random.randint(45, 90))
-      except Exception as e:
-        log_event(f"❌ Marketing send failed for {group}: {e}")
-        await asyncio.sleep(10)
+  log_event("🚀 Auto-Discovery & Marketing Engine Started!")
 
-    log_event("💤 Marketing engine completed 1 round. Sleeping 3 hours...")
-    await asyncio.sleep(10800)
+  # Dynamic Search Keywords
+  keywords = [
+      "crypto chat",
+      "binance signals",
+      "crypto discussion",
+      "bitcoin trading",
+      "altcoin chat",
+  ]
+
+  while True:
+    search_keyword = random.choice(keywords)
+    log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
+
+    try:
+      # Telegram par public groups/channels search karna
+      result = await client_userbot(SearchRequest(q=search_keyword, limit=10))
+
+      for chat in result.chats:
+        # Check karein ki result ek Group/Channel hai
+        if isinstance(chat, (Chat, Channel)) and chat.username:
+          group_username = chat.username
+
+          try:
+            # Group Join karein agar already member nahi hain
+            await client_userbot(JoinChannelRequest(group_username))
+            log_event(f"➕ Auto-Joined Group: @{group_username}")
+            await asyncio.sleep(5)
+
+            # Promo Message Send Karein
+            promo_message = create_promo_post()
+            await client_userbot.send_message(
+                group_username, promo_message, parse_mode="html"
+            )
+            log_event(f"✅ Marketing message sent to @{group_username}")
+
+            # Telethon/Telegram Spam Block se bachne ke liye delay (2 to 5 minutes)
+            delay = random.randint(120, 300)
+            log_event(
+                f"⏳ Waiting {delay}s before next group interaction..."
+            )
+            await asyncio.sleep(delay)
+
+          except Exception as inner_e:
+            log_event(f"⚠️ Could not post to @{group_username}: {inner_e}")
+            await asyncio.sleep(10)
+
+    except Exception as e:
+      log_event(f"❌ Auto-Discovery Search Error: {e}")
+
+    log_event("💤 Completed search round. Sleeping 2 hours...")
+    await asyncio.sleep(7200)
 
 
 def start_marketing_thread():
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
-  loop.run_until_complete(start_growth_engine())
+  loop.run_until_complete(auto_discover_and_market())
 
 
 # ==================== REPORT & MONITORING ====================
@@ -712,7 +746,7 @@ def membership_expiry_checker():
         u_id = row[0]
         success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
         if success:
-          log_event(f"👢 Auto-Kicked expired user ID: {u_id}")
+          log_event(f"` Auto-Kicked expired user ID: {u_id}")
           send_telegram_msg(
               VIP_BOT_TOKEN,
               u_id,
