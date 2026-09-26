@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 import random
@@ -9,7 +8,7 @@ import time
 from flask import Flask, jsonify, request
 import requests
 from telethon import TelegramClient
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.types import Channel, Chat
 
@@ -275,7 +274,6 @@ async def auto_discover_and_market():
   await client_userbot.start()
   log_event("🚀 Auto-Discovery & Marketing Engine Started!")
 
-  # Dynamic Search Keywords
   keywords = [
       "crypto chat",
       "binance signals",
@@ -285,7 +283,6 @@ async def auto_discover_and_market():
       "crypto india group",
   ]
 
-  # Channels aur bots jinka marketing ignore karna hai
   MY_CHANNELS = [
       "binancetop10free",
       "binancetop10_vipbot",
@@ -298,11 +295,9 @@ async def auto_discover_and_market():
     log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
 
     try:
-      # Telegram par public groups search karna
       result = await client_userbot(SearchRequest(q=search_keyword, limit=15))
 
       for chat in result.chats:
-        # Strict Filter: Group hona chahiye (Channel nahi) aur public username hona chahiye
         is_group = (
             isinstance(chat, Chat)
             or (isinstance(chat, Channel) and getattr(chat, "megagroup", False))
@@ -311,7 +306,6 @@ async def auto_discover_and_market():
         if is_group and getattr(chat, "username", None):
           group_username = chat.username.lower()
 
-          # 1. Skip if it is our own channel/bot
           if group_username in MY_CHANNELS:
             log_event(f"⏭️ Skipped own channel/bot: @{group_username}")
             continue
@@ -321,8 +315,7 @@ async def auto_discover_and_market():
             await client_userbot(JoinChannelRequest(group_username))
             log_event(f"➕ Auto-Joined Group: @{group_username}")
 
-            # Human-like delay (10 seconds)
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
             # Promo Message Send Karein
             promo_message = create_promo_post()
@@ -331,17 +324,22 @@ async def auto_discover_and_market():
             )
             log_event(f"✅ Marketing message sent to @{group_username}")
 
-            # Telethon/Telegram Spam Block se bachne ke liye safe delay (3 to 5 minutes)
             delay = random.randint(180, 300)
             log_event(f"⏳ Waiting {delay}s before next group interaction...")
             await asyncio.sleep(delay)
 
           except Exception as inner_e:
             log_event(
-                f"⚠️ Could not post to @{group_username} (No write permission"
-                f" or Muted): {inner_e}"
+                f"⚠️ Cannot post to @{group_username} (Restricted/Muted/No"
+                f" Send Permission): {inner_e}"
             )
-            await asyncio.sleep(15)
+            # Message na jane par group se auto-leave ho jayega
+            try:
+              await client_userbot(LeaveChannelRequest(group_username))
+              log_event(f"🚪 Auto-Left restricted group: @{group_username}")
+            except Exception as leave_e:
+              pass
+            await asyncio.sleep(10)
 
     except Exception as e:
       log_event(f"❌ Auto-Discovery Search Error: {e}")
