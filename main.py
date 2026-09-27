@@ -4,6 +4,7 @@ import random
 import sqlite3
 import threading
 import time
+import asyncio  # FIXED: Missing asyncio import added
 
 from flask import Flask, jsonify, request
 import requests
@@ -25,7 +26,6 @@ VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
 TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
 BINANCE_REF_LINK = "https://accounts.binance.com/register?ref=GRO_28502_IBUUM"
 
-# Userbot Marketing Credentials (my.telegram.org se praapt karein)
 API_ID = int(os.getenv("TELEGRAM_API_ID", "12345678"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "your_api_hash_here")
 
@@ -166,15 +166,10 @@ def get_market_data():
             )
       if valid_coins:
         return valid_coins
-    else:
-      log_event(
-          f"Primary Binance API Warning Status: {res.status_code}. Trying"
-          " Standby APIs..."
-      )
   except Exception as e:
     log_event(f"Primary Binance API Exception: {e}")
 
-  # Source 2: Binance US / Vision Standby API
+  # Source 2: Binance US Standby API
   try:
     backup_url = "https://api.binance.us/api/v3/ticker/24hr"
     res = requests.get(backup_url, headers=HEADERS, timeout=6.0)
@@ -271,8 +266,12 @@ def create_promo_post():
 
 
 async def auto_discover_and_market():
-  await client_userbot.start()
-  log_event("🚀 Auto-Discovery & Marketing Engine Started!")
+  try:
+    await client_userbot.start()
+    log_event("🚀 Auto-Discovery & Marketing Engine Started Successfully!")
+  except Exception as start_err:
+    log_event(f"❌ Userbot Client Start Failed: {start_err}")
+    return
 
   keywords = [
       "crypto chat",
@@ -291,11 +290,11 @@ async def auto_discover_and_market():
   ]
 
   while True:
-    search_keyword = random.choice(keywords)
-    log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
-
     try:
-      result = await client_userbot(SearchRequest(q=search_keyword, limit=15))
+      search_keyword = random.choice(keywords)
+      log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
+
+      result = await client_userbot(SearchRequest(q=search_keyword, limit=10))
 
       for chat in result.chats:
         is_group = (
@@ -307,51 +306,54 @@ async def auto_discover_and_market():
           group_username = chat.username.lower()
 
           if group_username in MY_CHANNELS:
-            log_event(f"⏭️ Skipped own channel/bot: @{group_username}")
             continue
 
           try:
-            # Group Join karein
+            # 1. Group Join
             await client_userbot(JoinChannelRequest(group_username))
             log_event(f"➕ Auto-Joined Group: @{group_username}")
 
-            await asyncio.sleep(5)
+            # Safe delay before posting (captcha/welcome delay)
+            await asyncio.sleep(8)
 
-            # Promo Message Send Karein
+            # 2. Promo Message Post
             promo_message = create_promo_post()
             await client_userbot.send_message(
                 group_username, promo_message, parse_mode="html"
             )
             log_event(f"✅ Marketing message sent to @{group_username}")
 
+            # Dynamic delay to protect account from spam detection
             delay = random.randint(180, 300)
-            log_event(f"⏳ Waiting {delay}s before next group interaction...")
+            log_event(f"⏳ Sleeping {delay}s before next interaction...")
             await asyncio.sleep(delay)
 
           except Exception as inner_e:
             log_event(
-                f"⚠️ Cannot post to @{group_username} (Restricted/Muted/No"
-                f" Send Permission): {inner_e}"
+                f"⚠️ Cannot post to @{group_username} (Restricted/Muted):"
+                f" {inner_e}"
             )
-            # Message na jane par group se auto-leave ho jayega
             try:
               await client_userbot(LeaveChannelRequest(group_username))
-              log_event(f"🚪 Auto-Left restricted group: @{group_username}")
-            except Exception as leave_e:
+              log_event(f"🚪 Auto-Left Restricted Group: @{group_username}")
+            except Exception:
               pass
-            await asyncio.sleep(10)
+            await asyncio.sleep(15)
 
-    except Exception as e:
-      log_event(f"❌ Auto-Discovery Search Error: {e}")
+    except Exception as loop_e:
+      log_event(f"❌ Auto-Discovery Search Error: {loop_e}")
 
-    log_event("💤 Completed search round. Sleeping 2 hours...")
-    await asyncio.sleep(7200)
+    log_event("💤 Completed current discovery round. Sleeping 1 hour...")
+    await asyncio.sleep(3600)
 
 
 def start_marketing_thread():
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
-  loop.run_until_complete(auto_discover_and_market())
+  try:
+    loop.run_until_complete(auto_discover_and_market())
+  except Exception as e:
+    log_event(f"🚨 Marketing Thread Fatal Error: {e}")
 
 
 # ==================== REPORT & MONITORING ====================
@@ -766,7 +768,7 @@ def membership_expiry_checker():
         u_id = row[0]
         success = kick_telegram_user(VIP_CHANNEL_ID, u_id)
         if success:
-          log_event(f"` Auto-Kicked expired user ID: {u_id}")
+          log_event(f"🚪 Auto-Kicked expired user ID: {u_id}")
           send_telegram_msg(
               VIP_BOT_TOKEN,
               u_id,
