@@ -273,13 +273,32 @@ async def auto_discover_and_market():
     log_event(f"❌ Userbot Client Start Failed: {start_err}")
     return
 
+  # Strictly Crypto/Trading Related Keywords
   keywords = [
-      "crypto chat",
-      "binance signals",
-      "crypto discussion",
-      "bitcoin trading",
-      "altcoin chat",
-      "crypto india group",
+      "binance trading india",
+      "crypto signals free",
+      "bitcoin trading group",
+      "crypto scalping signals",
+      "altcoin signals telegram",
+      "futures trading group",
+  ]
+
+  # Blacklist Keywords to Filter Out Adult/Irrelevant Groups
+  NSFW_BLACKLIST = [
+      "chatting",
+      "friend",
+      "fun",
+      "dating",
+      "adult",
+      "sexy",
+      "nsfw",
+      "desi",
+      "call",
+      "girl",
+      "boobs",
+      "bhabhi",
+      "romance",
+      "meet",
   ]
 
   MY_CHANNELS = [
@@ -294,7 +313,7 @@ async def auto_discover_and_market():
       search_keyword = random.choice(keywords)
       log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
 
-      result = await client_userbot(SearchRequest(q=search_keyword, limit=10))
+      result = await client_userbot(SearchRequest(q=search_keyword, limit=15))
 
       for chat in result.chats:
         is_group = (
@@ -304,17 +323,30 @@ async def auto_discover_and_market():
 
         if is_group and getattr(chat, "username", None):
           group_username = chat.username.lower()
+          group_title = getattr(chat, "title", "").lower()
 
           if group_username in MY_CHANNELS:
+            continue
+
+          # Check if Group Title or Username contains Blacklisted words
+          if any(
+              bad_word in group_title or bad_word in group_username
+              for bad_word in NSFW_BLACKLIST
+          ):
+            log_event(
+                f"🚫 Skipped Irrelevant/NSFW Group: {group_title} (@{group_username})"
+            )
             continue
 
           try:
             # 1. Group Join
             await client_userbot(JoinChannelRequest(group_username))
-            log_event(f"➕ Auto-Joined Group: @{group_username}")
+            log_event(
+                f"➕ Auto-Joined Valid Crypto Group: @{group_username}"
+            )
 
-            # Safe delay before posting (captcha/welcome delay)
-            await asyncio.sleep(8)
+            # Safe delay before posting
+            await asyncio.sleep(10)
 
             # 2. Promo Message Post
             promo_message = create_promo_post()
@@ -324,7 +356,7 @@ async def auto_discover_and_market():
             log_event(f"✅ Marketing message sent to @{group_username}")
 
             # Dynamic delay to protect account from spam detection
-            delay = random.randint(180, 300)
+            delay = random.randint(200, 400)
             log_event(f"⏳ Sleeping {delay}s before next interaction...")
             await asyncio.sleep(delay)
 
