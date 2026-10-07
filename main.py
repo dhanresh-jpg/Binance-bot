@@ -24,17 +24,13 @@ from telethon.tl.types import Channel, Chat
 logging.basicConfig(level=logging.INFO)
 
 # ==================== CONFIGURATION ====================
-FREE_BOT_TOKEN = os.getenv(
-    "FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU"
-)
-VIP_BOT_TOKEN = os.getenv(
-    "VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8"
-)
+FREE_BOT_TOKEN = os.getenv("FREE_BOT_TOKEN", "8842407289:AAHD6UcvOZ0pgvN8EJXXetb2qrW-fGeZCvU")
+VIP_BOT_TOKEN = os.getenv("VIP_BOT_TOKEN", "8997353064:AAH2gTVchfQqqId1TvBa2CD8nIXY00ZUj_8")
 
 FREE_CHANNEL_ID = os.getenv("FREE_CHANNEL_ID", "-1003924921868")
 VIP_CHANNEL_ID = os.getenv("VIP_CHANNEL_ID", "-1003836756507")
-TRUST_WALLET_ADDRESS = "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52"
-BINANCE_REF_LINK = "https://accounts.binance.com/register?ref=GRO_28502_IBUUM"
+TRUST_WALLET_ADDRESS = os.getenv("TRUST_WALLET_ADDRESS", "TErttGLUQZtrCwusaQsjdywXdkxUrNFm52")
+BINANCE_REF_LINK = os.getenv("BINANCE_REF_LINK", "https://accounts.binance.com/register?ref=GRO_28502_IBUUM")
 
 API_ID = int(os.getenv("TELEGRAM_API_ID", "12345678"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "your_api_hash_here")
@@ -70,6 +66,7 @@ last_vip_dispatch_time = 0
 # Format: { group_username: last_message_id }
 SENT_PROMO_TRACKER = {}
 
+marketing_loop = None
 
 # ==================== LOGGING & DATABASE ====================
 def log_event(message):
@@ -81,9 +78,13 @@ def log_event(message):
     print(entry)
 
 
+def get_db_connection():
+    return sqlite3.connect("vip_members.db", timeout=15.0, check_same_thread=False)
+
+
 def init_db():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS members (user_id INTEGER PRIMARY KEY,"
@@ -99,7 +100,7 @@ def init_db():
         cursor.execute("""CREATE TABLE IF NOT EXISTS referral_claims (
                                 user_id INTEGER, 
                                 binance_uid TEXT PRIMARY KEY, 
-                                status TEXT DEFAULT "PENDING", 
+                                status TEXT DEFAULT 'PENDING', 
                                 created_date TEXT)""")
         cursor.execute("""CREATE TABLE IF NOT EXISTS signal_history (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -111,7 +112,7 @@ def init_db():
                                 sl REAL, 
                                 timestamp REAL, 
                                 created_date TEXT, 
-                                status TEXT DEFAULT "PENDING")""")
+                                status TEXT DEFAULT 'PENDING')""")
         conn.commit()
         conn.close()
         log_event("Database Initialized Successfully.")
@@ -124,7 +125,7 @@ init_db()
 
 def cleanup_3day_old_data():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         three_days_ago = (datetime.now(IST) - timedelta(days=3)).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -405,10 +406,11 @@ async def auto_discover_and_market():
 
 
 def start_marketing_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    global marketing_loop
+    marketing_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(marketing_loop)
     try:
-        loop.run_until_complete(auto_discover_and_market())
+        marketing_loop.run_until_complete(auto_discover_and_market())
     except Exception as e:
         log_event(f"🚨 Marketing Thread Fatal Error: {e}")
 
@@ -416,7 +418,7 @@ def start_marketing_thread():
 # ==================== REPORT & MONITORING ====================
 def generate_24h_result_report():
     try:
-        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
         twenty_four_hrs_ago = (datetime.now(IST) - timedelta(hours=24)).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -479,7 +481,7 @@ def live_signal_monitor_worker():
     log_event("🎯 Live Signal TP/SL Monitor Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT id, symbol, entry_price, tp1, tp2, tp3, sl FROM"
@@ -544,13 +546,17 @@ def live_signal_monitor_worker():
                         send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, update_msg)
                         send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, update_msg)
 
-                        # Trigger broadcast to Marketing Groups
+                        # Safe Thread-aware Marketing Broadcast Trigger
                         try:
-                            asyncio.run(broadcast_signal_hit_to_marketing_groups(sym, target_str))
+                            if marketing_loop and marketing_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(
+                                    broadcast_signal_hit_to_marketing_groups(sym, target_str),
+                                    marketing_loop
+                                )
                         except Exception as b_err:
                             log_event(f"Broadcast Trigger Exception: {b_err}")
 
-                        conn = sqlite3.connect("vip_members.db", timeout=10.0)
+                        conn = get_db_connection()
                         cursor = conn.cursor()
                         cursor.execute(
                             "UPDATE signal_history SET status = ? WHERE id = ?",
@@ -570,7 +576,7 @@ def pending_user_reminder_worker():
     log_event("🔄 Pending User Auto-Drip Follow-Up Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT DISTINCT user_id FROM referral_claims WHERE status = 'PENDING'"
@@ -681,7 +687,7 @@ def scan_and_dispatch(force_mode=False):
 
     if should_send_vip or should_send_free:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
@@ -844,7 +850,7 @@ def membership_expiry_checker():
     log_event("⏳ Expiry & Auto-Kick Worker Started...")
     while True:
         try:
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -947,7 +953,7 @@ def process_message_async(chat_id, text):
             binance_uid = text_clean
             now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -992,7 +998,7 @@ def process_message_async(chat_id, text):
 
         else:
             txid = text_clean
-            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM processed_txids WHERE txid = ?", (txid,))
             if cursor.fetchone():
