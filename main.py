@@ -158,6 +158,21 @@ def format_price(val):
         return f"{val:.8f}"
 
 
+def get_fomo_vip_plans_text():
+    """Generates dynamic FOMO text for VIP plans."""
+    seats_left = random.randint(2, 5)
+    return (
+        f"🔥 <b>LIMITED TIME VIP DISCOUNT</b> 🔥\n"
+        f"⚠️ <i>Only {seats_left} seats remaining for today's batch!</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>10 Days VIP</b>: <s>$20</s> <b>$10 USDT</b> (50% OFF)\n"
+        f"• <b>20 Days VIP</b>: <s>$35</s> <b>$19 USDT</b>\n"
+        f"• <b>30 Days VIP</b>: <s>$50</s> <b>$28 USDT</b>\n\n"
+        f"⚡ <i>Price increases to normal once seats are full!</i>\n\n"
+        f"Click 'Get Payment Address' to proceed with payment or 'Free VIP via Referral' to join!"
+    )
+
+
 # ==================== MARKET DATA FETCHING ====================
 def get_market_data():
     valid_coins = []
@@ -550,6 +565,33 @@ def live_signal_monitor_worker():
         time.sleep(60)
 
 
+def pending_user_reminder_worker():
+    """Sends 24h follow-up discount and win proof to non-paid users."""
+    log_event("🔄 Pending User Auto-Drip Follow-Up Worker Started...")
+    while True:
+        try:
+            conn = sqlite3.connect("vip_members.db", timeout=10.0)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT user_id FROM referral_claims WHERE status = 'PENDING'"
+            )
+            pending_users = cursor.fetchall()
+            conn.close()
+
+            reminder_msg = (
+                "🎯 <b>YESTERDAY'S VIP ACCURACY: 94%!</b> 🔥\n\n"
+                "Aapne abhi tak VIP access claim nahi kiya hai. Aaj 3+ high-probability scalp signals aane wale hain!\n\n"
+                "⚡ Top-up <b>$10 USDT</b> & claim your VIP seat instantly:\n"
+                "👉 @BinanceTop10_VIPBot"
+            )
+            for u in pending_users:
+                send_telegram_msg(VIP_BOT_TOKEN, u[0], reminder_msg)
+                time.sleep(2)
+        except Exception as e:
+            log_event(f"Reminder Worker Error: {e}")
+        time.sleep(86400) # Every 24 hours
+
+
 def scan_and_dispatch(force_mode=False):
     global vip_signals_today, free_signals_today, last_reset_day, last_free_dispatch_time, last_vip_dispatch_time
     log_event(f"🔍 Running Scan (Force Mode: {force_mode})...")
@@ -681,7 +723,7 @@ def dispatch_vip_signal(s):
 
 def dispatch_free_signal(s):
     msg = (
-        f"🔥 <b>REAL-TIME VIP SIGNAL PREVIEW</b> 🔥\n"
+        f"🔥 <b>REAL-TIME FREE SIGNAL PREVIEW</b> 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Pair</b>: #{s['symbol']}\n"
         f"📊 <b>Market Type</b>: <code>{s['mode']}</code>\n"
@@ -689,18 +731,19 @@ def dispatch_free_signal(s):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📥 <b>Entry Zone</b>: ${format_price(s['price'])}\n\n"
         f"🎯 <b>Target 1</b>: ${format_price(s['tp1'])}\n"
-        f"🎯 <b>Target 2</b>: ${format_price(s['tp2'])}\n"
-        f"🚀 <b>Target 3 (Max)</b>: ${format_price(s['tp3'])}\n"
-        f"⛔ <b>Stop Loss</b>: ${format_price(s['sl'])}\n"
+        f"🎯 <b>Target 2</b>: <tg-spoiler>🔒 VIP MEMBERS ONLY</tg-spoiler>\n"
+        f"🚀 <b>Target 3 (Max)</b>: <tg-spoiler>🔒 VIP MEMBERS ONLY</tg-spoiler>\n"
+        f"⛔ <b>Stop Loss</b>: <tg-spoiler>🔒 VIP MEMBERS ONLY</tg-spoiler>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📈 <b>24h Change</b>: {s['change']}%\n"
         f"📊 <b>RSI Indicator</b>: {s['rsi']}\n"
         f"🛡️ <b>Key Support/Resistance</b>: ${format_price(s['low'])}\n"
         f"⚖️ <b>Strategy</b>: High-Probability Scalp\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <i>Complete signal with precise TP/SL is available in VIP!</i>\n\n"
         f"🔗 <b>Binance Referral Link:</b> {BINANCE_REF_LINK}\n"
         f"📢 <b>Free Channel:</b> https://t.me/BinanceTop10Free\n"
-        f"💎 <b>Join VIP For All Signals:</b> @BinanceTop10_VIPBot"
+        f"💎 <b>Get Full VIP Access:</b> @BinanceTop10_VIPBot"
     )
     return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
@@ -852,15 +895,7 @@ def process_message_async(chat_id, text):
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, welcome_text)
 
         elif "View VIP Plans" in text_clean:
-            plan_text = (
-                "💎 <b>VIP MEMBERSHIP PLANS</b> 💎\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "• <b>10 Days VIP</b>: $10 USDT\n"
-                "• <b>20 Days VIP</b>: $19 USDT\n"
-                "• <b>30 Days VIP</b>: $28 USDT\n\n"
-                "<i>Click 'Get Payment Address' to proceed with payment or 'Free VIP"
-                " via Referral' to join for free!</i>"
-            )
+            plan_text = get_fomo_vip_plans_text()
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, plan_text)
 
         elif "Get Payment Address" in text_clean:
@@ -882,8 +917,7 @@ def process_message_async(chat_id, text):
                 "2️⃣ Complete your account setup.\n"
                 "3️⃣ Copy your **Binance UID** (8-10 digit number from your Binance"
                 " profile) and send it directly here in chat.\n\n"
-                "<i>Our team will verify your referral and grant you 1 month of Free"
-                " VIP access!</i>"
+                "⚡ <i>Submit your UID to claim 2-Hour Temporary VIP Trial Pass while admin verifies!</i>"
             )
             send_telegram_msg(VIP_BOT_TOKEN, chat_id, ref_text)
 
@@ -921,6 +955,14 @@ def process_message_async(chat_id, text):
                     " created_date) VALUES (?, ?, 'PENDING', ?)",
                     (chat_id, binance_uid, now_str),
                 )
+                
+                # Give 2 Hours Instant VIP Pass Hook
+                temp_expiry = (datetime.now(IST) + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute(
+                    "INSERT OR REPLACE INTO members (user_id, expiry_date, status)"
+                    " VALUES (?, ?, 'ACTIVE')",
+                    (chat_id, temp_expiry),
+                )
                 conn.commit()
                 conn.close()
 
@@ -929,13 +971,15 @@ def process_message_async(chat_id, text):
                     "━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🆔 <b>Binance UID</b>: <code>{binance_uid}</code>\n"
                     "📌 <b>Status</b>: <b>PENDING ADMIN VERIFICATION</b>\n\n"
-                    "🎉 We are verifying your signup through our referral link. Once"
-                    " confirmed, your 1 month Free VIP access will be activated!"
+                    "🎁 <b>BONUS TRIGGERED:</b> Aapko <b>2 Ghante ka Temporary VIP Pass</b> active kar diya gaya hai!\n\n"
+                    "🎉 <b>VIP Channel Pass Link:</b>\n"
+                    "https://t.me/+YourVIPChannelInviteLink\n\n"
+                    "<i>Once full referral setup is confirmed, your 1 Month Free VIP will be extended automatically!</i>"
                 )
                 send_telegram_msg(VIP_BOT_TOKEN, chat_id, success_claim_msg)
                 log_event(
                     f"🎁 Referral claim submitted by user {chat_id} with UID"
-                    f" {binance_uid}"
+                    f" {binance_uid} (2h trial granted)"
                 )
             except sqlite3.IntegrityError:
                 conn.close()
@@ -1093,6 +1137,7 @@ threading.Thread(target=telegram_polling_worker, daemon=True).start()
 threading.Thread(target=continuous_market_scanner, daemon=True).start()
 threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
 threading.Thread(target=membership_expiry_checker, daemon=True).start()
+threading.Thread(target=pending_user_reminder_worker, daemon=True).start()
 
 # Marketing Userbot Background Thread Start
 threading.Thread(target=start_marketing_thread, daemon=True).start()
