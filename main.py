@@ -50,7 +50,6 @@ app = Flask(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 system_logs = []
 
-# Added $1 Trial Offer button along with original menu options
 KEYBOARD_LAYOUT = {
     "keyboard": [
         [{"text": "💎 View VIP Plans"}, {"text": "⚡ Get 1 Signal for $1"}],
@@ -283,6 +282,7 @@ async def safe_send_userbot_message(chat_username, text, reply_to=None):
             parse_mode='html', 
             reply_to=reply_to
         )
+        log_event(f"✅ Userbot Message Sent Successfully to @{chat_username}")
         return msg
     except FloodWaitError as e:
         log_event(f"⏳ Telegram Rate Limit! Waiting {e.seconds}s to protect account...")
@@ -315,7 +315,7 @@ async def broadcast_signal_hit_to_marketing_groups(pair_name, target_name):
         sent_msg = await safe_send_userbot_message(group_username, hit_text, reply_to=last_msg_id)
         if sent_msg is None:
             groups_to_remove.append(group_username)
-        await asyncio.sleep(random.randint(15, 30))
+        await asyncio.sleep(random.randint(10, 20))
 
     for g in groups_to_remove:
         SENT_PROMO_TRACKER.pop(g, None)
@@ -327,7 +327,7 @@ async def auto_discover_and_market():
             await client_userbot.start()
         log_event("🚀 Auto-Discovery & Marketing Engine Started Safely!")
     except Exception as start_err:
-        log_event(f"❌ Userbot Client Start Failed: {start_err}")
+        log_event(f"❌ Userbot Client Start Failed (Check API_ID/API_HASH): {start_err}")
         return
 
     keywords = [
@@ -377,7 +377,7 @@ async def auto_discover_and_market():
                         await client_userbot(JoinChannelRequest(group_username))
                         log_event(f"➕ Auto-Joined Valid Group: @{group_username}")
 
-                        await asyncio.sleep(random.randint(20, 40))
+                        await asyncio.sleep(random.randint(10, 25))
 
                         promo_message = get_dynamic_promo_post()
                         sent_msg = await safe_send_userbot_message(group_username, promo_message)
@@ -386,8 +386,9 @@ async def auto_discover_and_market():
                             SENT_PROMO_TRACKER[group_username] = sent_msg.id
                             log_event(f"✅ Marketing promo sent & tracked for @{group_username}")
 
-                        delay = random.randint(300, 600)
-                        log_event(f"⏳ Anti-Ban Delay: Sleeping {delay}s before next group...")
+                        # Faster Safe Delay (1 to 2 minutes)
+                        delay = random.randint(60, 150)
+                        log_event(f"⏳ Sleeping {delay}s before next group...")
                         await asyncio.sleep(delay)
 
                     except Exception as inner_e:
@@ -396,13 +397,13 @@ async def auto_discover_and_market():
                             await client_userbot(LeaveChannelRequest(group_username))
                         except Exception:
                             pass
-                        await asyncio.sleep(15)
+                        await asyncio.sleep(10)
 
         except Exception as loop_e:
             log_event(f"❌ Auto-Discovery Search Error: {loop_e}")
 
-        log_event("💤 Finished round. Sleeping 1 hour to maintain account health...")
-        await asyncio.sleep(3600)
+        log_event("💤 Finished search round. Sleeping 15 minutes before next round...")
+        await asyncio.sleep(900)
 
 
 def start_marketing_thread():
