@@ -4,34 +4,26 @@ import random
 import sqlite3
 import threading
 import time
+import asyncio
 import logging
 import re
 import html
 
 from flask import Flask, jsonify, request
 import requests
+from telethon import TelegramClient
+from telethon.errors import (
+    FloodWaitError, 
+    UserBannedInChannelError, 
+    ChatWriteForbiddenError, 
+    ChannelPrivateError
+)
+from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest
+from telethon.tl.functions.contacts import SearchRequest
+from telethon.tl.types import Channel, Chat
 
 # ============================================================
-# BINANCE TOP 10 - UPDATED MAIN.PY
-# ============================================================
-# IMPORTANT:
-# The bot tokens that were pasted in chat are intentionally NOT
-# reproduced here. Keep your existing local token values in the
-# environment variables FREE_BOT_TOKEN and VIP_BOT_TOKEN.
-#
-# This version:
-# - keeps the existing Telegram/Flask/SQLite architecture
-# - removes automatic random-group joining/posting
-# - adds real RSI from 15m candles
-# - adds real recent support/resistance
-# - improves signal filtering
-# - fixes TP1 -> TP2 -> TP3 tracking
-# - adds real result statistics
-# - adds opt-in referral/deep-link tracking
-# - verifies Free Channel membership
-# - creates tracked channel invite links when possible
-# - removes fake accuracy/FOMO claims
-# - makes SQLite safer for multiple workers
+# BINANCE TOP 10 - ULTIMATE COMBINED MAIN.PY
 # ============================================================
 
 logging.basicConfig(
@@ -92,6 +84,27 @@ VIP_INTERVAL = 40 * 60
 MIN_VOLUME_USDT = 1_000_000
 CANDLE_INTERVAL = "15m"
 CANDLE_LIMIT = 100
+
+SENT_PROMO_TRACKER = {}
+
+KEYBOARD_LAYOUT = {
+    "keyboard": [
+        [
+            {"text": "💎 View VIP Plans"},
+            {"text": "⚡ Get 1 Signal for $1"}
+        ],
+        [
+            {"text": "💳 Get Payment Address"},
+            {"text": "🎁 Free VIP via Referral"}
+        ],
+        [
+            {"text": "🔍 Verify Payment"},
+            {"text": "✅ How to Verify TXID"}
+        ]
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True
+}
 
 
 # ============================================================
@@ -206,7 +219,6 @@ def init_db():
         )
     """)
 
-    # Safe migrations for databases created by the old version.
     existing = {
         row["name"]
         for row in cur.execute("PRAGMA table_info(signal_history)")
@@ -297,7 +309,10 @@ def send_telegram_msg(bot_token, chat_id, text, reply_markup=None):
         "disable_web_page_preview": True,
     }
 
-    if reply_markup is not None:
+    chat_str = str(chat_id)
+    if not chat_str.startswith("-"):
+        payload["reply_markup"] = reply_markup if reply_markup else KEYBOARD_LAYOUT
+    elif reply_markup is not None:
         payload["reply_markup"] = reply_markup
 
     data = tg_request(bot_token, "sendMessage", payload)
@@ -333,9 +348,6 @@ def is_free_channel_member(user_id):
 
 
 def create_invite_link(source_code):
-    """
-    Requires the FREE bot to be an administrator of the Free Channel.
-    """
     conn = db_connect()
     row = conn.execute(
         "SELECT invite_link FROM invite_links WHERE source_code = ?",
@@ -518,7 +530,7 @@ def update_free_join_status(user_id):
 
 
 # ============================================================
-# MARKET DATA
+# MARKET DATA & TECHNICAL INDICATORS (RSI / EMA)
 # ============================================================
 
 def get_binance_24h():
@@ -535,7 +547,6 @@ def get_binance_24h():
         if not symbol.endswith("USDT"):
             continue
 
-        # Avoid leveraged tokens and obvious stablecoin pairs.
         if any(x in symbol for x in ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")):
             continue
 
@@ -735,11 +746,9 @@ def build_signal(candidate):
     if rsi is None or ema20 is None or ema50 is None:
         return None
 
-    # Do not enter extremely overbought/oversold conditions.
     if rsi >= 78 or rsi <= 22:
         return None
 
-    # Trend + momentum scoring.
     long_score = 0
     short_score = 0
 
@@ -771,7 +780,6 @@ def build_signal(candidate):
     else:
         return None
 
-    # Conservative target/SL distances.
     if side == "LONG":
         tp1 = price * 1.006
         tp2 = price * 1.012
@@ -790,7 +798,7 @@ def build_signal(candidate):
         "price": price,
         "side": side,
         "mode": mode,
-        "leverage": "Up to 5x (risk-managed)",
+        "leverage": "Cross 10x - 20x",
         "rsi": round(rsi, 2),
         "tp1": tp1,
         "tp2": tp2,
@@ -808,11 +816,9 @@ def build_signal(candidate):
 
 def find_best_signal():
     coins = get_market_data()
-
     if not coins:
         return None
 
-    # First shortlist by movement and volume.
     candidates = [
         c for c in coins
         if c["volume"] >= MIN_VOLUME_USDT
@@ -827,7 +833,6 @@ def find_best_signal():
         reverse=True
     )
 
-    # Analyze only top candidates to keep API load reasonable.
     for candidate in candidates[:15]:
         signal = build_signal(candidate)
         if signal:
@@ -837,7 +842,107 @@ def find_best_signal():
 
 
 # ============================================================
-# SIGNAL MESSAGES
+# USERBOT MARKETING ENGINE
+# ============================================================
+
+client_userbot = TelegramClient("growth_userbot_session", API_ID, API_HASH)
+
+def get_dynamic_promo_post():
+    headers = [
+        "🔥 <b>ACCURATE CRYPTO SIGNALS</b> 🔥",
+        "⚡ <b>BINANCE FUTURES SIGNAL VIP</b> ⚡",
+        "🚀 <b>HIGH-ACCURACY TRADING SIGNALS</b> 🚀"
+    ]
+    bodies = [
+        "Daily High-Accuracy Signals & Live Market Analysis.\nJoin our channel now and start making profits daily!",
+        "Don't trade blindly in this market! Real-time TP/SL alerts and expert technical analysis provided."
+    ]
+    ctas = [
+        f"👉 <b>Join Free Channel:</b> @{FREE_CHANNEL_USERNAME}\n💎 <b>Bot Link:</b> @{VIP_BOT_USERNAME}"
+    ]
+    return f"{random.choice(headers)}\n\n{random.choice(bodies)}\n\n{random.choice(ctas)}"
+
+
+async def safe_send_userbot_message(chat_username, text, reply_to=None):
+    try:
+        msg = await client_userbot.send_message(chat_username, text, parse_mode='html', reply_to=reply_to)
+        return msg
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds + 5)
+        return None
+    except Exception:
+        return None
+
+
+async def broadcast_signal_hit_to_marketing_groups(pair_name, target_name):
+    hit_text = (
+        f"🎯 <b>SIGNAL HIT UPDATE: #{pair_name}</b> 🎯\n\n"
+        f"✅ <b>Status:</b> {target_name}\n\n"
+        f"💰 Join VIP Channel: @{FREE_CHANNEL_USERNAME}\n"
+        f"🤖 Direct VIP Access: @{VIP_BOT_USERNAME}"
+    )
+    groups_to_remove = []
+    for group_username, last_msg_id in list(SENT_PROMO_TRACKER.items()):
+        sent_msg = await safe_send_userbot_message(group_username, hit_text, reply_to=last_msg_id)
+        if sent_msg is None:
+            groups_to_remove.append(group_username)
+        await asyncio.sleep(random.randint(10, 20))
+
+    for g in groups_to_remove:
+        SENT_PROMO_TRACKER.pop(g, None)
+
+
+async def auto_discover_and_market():
+    if not API_ID or not API_HASH or API_ID == 12345678:
+        log_event("⚠️ Userbot skipped: TELEGRAM_API_ID or TELEGRAM_API_HASH not configured.")
+        return
+    try:
+        await client_userbot.start()
+        log_event("🚀 Userbot Marketing Engine Started!")
+    except Exception as e:
+        log_event(f"❌ Userbot Start Failed: {e}")
+        return
+
+    keywords = ["binance trading india", "crypto signals free", "bitcoin trading group", "crypto scalping"]
+    nsfw_blacklist = ["chatting", "friend", "fun", "dating", "adult", "sexy", "nsfw", "desi", "call", "girl"]
+
+    while True:
+        try:
+            if not client_userbot.is_connected():
+                await client_userbot.connect()
+            keyword = random.choice(keywords)
+            result = await client_userbot(SearchRequest(q=keyword, limit=5))
+            for chat in result.chats:
+                if (isinstance(chat, Chat) or (isinstance(chat, Channel) and getattr(chat, "megagroup", False))) and getattr(chat, "username", None):
+                    uname = chat.username.lower()
+                    title = getattr(chat, "title", "").lower()
+                    if any(bad in title or bad in uname for bad in nsfw_blacklist):
+                        continue
+                    try:
+                        await client_userbot(JoinChannelRequest(uname))
+                        await asyncio.sleep(10)
+                        sent_msg = await safe_send_userbot_message(uname, get_dynamic_promo_post())
+                        if sent_msg:
+                            SENT_PROMO_TRACKER[uname] = sent_msg.id
+                        await asyncio.sleep(60)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log_event(f"Userbot Loop Error: {e}")
+        await asyncio.sleep(1800)
+
+
+def start_marketing_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(auto_discover_and_market())
+    except Exception as e:
+        log_event(f"Marketing Thread Error: {e}")
+
+
+# ============================================================
+# SIGNAL MESSAGES & DISPATCH
 # ============================================================
 
 def signal_message(s, vip=False):
@@ -863,27 +968,21 @@ def signal_message(s, vip=False):
             f"📊 <b>Signal Score:</b> {s['score']}/5\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔗 <b>Binance:</b> {BINANCE_REF_LINK}\n"
-            "⚠️ <i>Use strict risk management. This is market analysis, "
-            "not a profit guarantee.</i>"
+            "⚠️ <i>Use strict risk management.</i>"
         )
 
     return (
-        "🔥 <b>FREE SIGNAL</b> 🔥\n"
+        "🔥 <b>FREE SIGNAL PREVIEW</b> 🔥\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>Pair:</b> #{html.escape(s['symbol'])}\n"
         f"📊 <b>Side:</b> {s['side']}\n"
         f"📥 <b>Entry:</b> ${format_price(s['price'])}\n"
         f"🎯 <b>TP1:</b> ${format_price(s['tp1'])}\n"
-        f"⛔ <b>SL:</b> ${format_price(s['sl'])}\n"
+        f"⛔ <b>SL:</b> <tg-spoiler>🔒 VIP ONLY</tg-spoiler>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>RSI:</b> {s['rsi']}\n"
-        f"🛡️ <b>Support:</b> ${format_price(s['support'])}\n"
-        f"🚧 <b>Resistance:</b> ${format_price(s['resistance'])}\n"
-        f"📈 <b>24h Change:</b> {s['change']}%\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "💎 <b>Full TP1/TP2/TP3 + live updates:</b> "
-        f"{vip_bot_link()}\n\n"
-        "⚠️ <i>Market analysis only. No guaranteed returns.</i>"
+        f"💎 <b>Full TP1/TP2/TP3 + live updates:</b> {vip_bot_link()}\n\n"
+        "⚠️ <i>Market analysis only.</i>"
     )
 
 
@@ -900,18 +999,9 @@ def save_signal(s):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, 0)
         """,
         (
-            s["symbol"],
-            s["side"],
-            s["price"],
-            s["tp1"],
-            s["tp2"],
-            s["tp3"],
-            s["sl"],
-            now,
-            now_str
+            s["symbol"], s["side"], s["price"], s["tp1"], s["tp2"], s["tp3"], s["sl"], now, now_str
         )
     )
-
     signal_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -919,32 +1009,16 @@ def save_signal(s):
 
 
 def dispatch_vip_signal(s):
-    return send_telegram_msg(
-        VIP_BOT_TOKEN,
-        VIP_CHANNEL_ID,
-        signal_message(s, vip=True)
-    )
+    return send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, signal_message(s, vip=True))
 
 
 def dispatch_free_signal(s):
-    return send_telegram_msg(
-        FREE_BOT_TOKEN,
-        FREE_CHANNEL_ID,
-        signal_message(s, vip=False)
-    )
+    return send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, signal_message(s, vip=False))
 
-
-# ============================================================
-# SIGNAL SCANNING
-# ============================================================
 
 def reset_daily_counters_if_needed():
-    global free_signals_today
-    global vip_signals_today
-    global last_reset_date
-
+    global free_signals_today, vip_signals_today, last_reset_date
     today = datetime.now(IST).date()
-
     if today != last_reset_date:
         free_signals_today = 0
         vip_signals_today = 0
@@ -953,63 +1027,33 @@ def reset_daily_counters_if_needed():
 
 
 def scan_and_dispatch(force_mode=False):
-    global free_signals_today
-    global vip_signals_today
-    global last_free_dispatch_time
-    global last_vip_dispatch_time
-
+    global free_signals_today, vip_signals_today, last_free_dispatch_time, last_vip_dispatch_time
     reset_daily_counters_if_needed()
 
     now = time.time()
-
     signal = find_best_signal()
-
     if not signal:
         log_event("No high-quality signal found in this scan.")
         return False
 
-    vip_allowed = (
-        vip_signals_today < VIP_MAX_PER_DAY
-        and now - last_vip_dispatch_time >= VIP_INTERVAL
-    )
-
-    free_allowed = (
-        free_signals_today < FREE_MAX_PER_DAY
-        and now - last_free_dispatch_time >= FREE_INTERVAL
-    )
-
-    if force_mode:
-        vip_allowed = True
-        free_allowed = True
+    vip_allowed = force_mode or (vip_signals_today < VIP_MAX_PER_DAY and now - last_vip_dispatch_time >= VIP_INTERVAL)
+    free_allowed = force_mode or (free_signals_today < FREE_MAX_PER_DAY and now - last_free_dispatch_time >= FREE_INTERVAL)
 
     sent_any = False
-
-    # Save only once per signal.
-    signal_id = None
-
     if vip_allowed:
         if dispatch_vip_signal(signal):
             vip_signals_today += 1
             last_vip_dispatch_time = now
             sent_any = True
-            log_event(
-                f"VIP signal sent: {signal['symbol']} "
-                f"{signal['side']} score={signal['score']}"
-            )
 
     if free_allowed:
         if dispatch_free_signal(signal):
             free_signals_today += 1
             last_free_dispatch_time = now
             sent_any = True
-            log_event(
-                f"Free signal sent: {signal['symbol']} "
-                f"{signal['side']} score={signal['score']}"
-            )
 
     if sent_any:
-        signal_id = save_signal(signal)
-        log_event(f"Signal #{signal_id} saved.")
+        save_signal(signal)
 
     return sent_any
 
@@ -1020,21 +1064,14 @@ def scan_and_dispatch(force_mode=False):
 
 def update_signal_stage(signal_id, status, stage, closed=0):
     conn = db_connect()
-
     if closed:
         conn.execute(
             """
             UPDATE signal_history
-            SET status = ?, current_stage = ?, closed = 1,
-                closed_date = ?
+            SET status = ?, current_stage = ?, closed = 1, closed_date = ?
             WHERE id = ?
             """,
-            (
-                status,
-                stage,
-                datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                signal_id
-            )
+            (status, stage, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"), signal_id)
         )
     else:
         conn.execute(
@@ -1045,7 +1082,6 @@ def update_signal_stage(signal_id, status, stage, closed=0):
             """,
             (status, stage, signal_id)
         )
-
     conn.commit()
     conn.close()
 
@@ -1062,21 +1098,18 @@ def send_signal_update(sym, side, entry, current_price, text):
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"💎 <b>VIP:</b> {vip_bot_link()}"
     )
-
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, message)
     send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, message)
 
 
 def live_signal_monitor_worker():
     log_event("Live TP/SL monitor started.")
-
     while True:
         try:
             conn = db_connect()
             rows = conn.execute(
                 """
-                SELECT id, symbol, side, entry_price, tp1, tp2, tp3, sl,
-                       current_stage, status
+                SELECT id, symbol, side, entry_price, tp1, tp2, tp3, sl, current_stage, status
                 FROM signal_history
                 WHERE closed = 0
                 """
@@ -1095,11 +1128,9 @@ def live_signal_monitor_worker():
                 sym = row["symbol"]
                 side = row["side"]
                 entry = row["entry_price"]
-                tp1 = row["tp1"]
-                tp2 = row["tp2"]
-                tp3 = row["tp3"]
-                sl = row["sl"]
+                tp1, tp2, tp3, sl = row["tp1"], row["tp2"], row["tp3"], row["sl"]
                 stage = row["current_stage"]
+                status = row["status"]
 
                 current = prices.get(sym)
                 if not current:
@@ -1108,110 +1139,50 @@ def live_signal_monitor_worker():
                 new_stage = stage
                 event = None
                 closed = False
-                status = row["status"]
 
                 if side == "LONG":
                     if current >= tp3 and stage < 3:
-                        new_stage = 3
-                        event = f"🚀 TP3 HIT @ ${format_price(tp3)}"
-                        status = "TP3_HIT"
-                        closed = True
+                        new_stage, event, status, closed = 3, f"🚀 TP3 HIT @ ${format_price(tp3)}", "TP3_HIT", True
                     elif current >= tp2 and stage < 2:
-                        new_stage = 2
-                        event = f"🎯 TP2 HIT @ ${format_price(tp2)}"
-                        status = "TP2_HIT"
+                        new_stage, event, status = 2, f"🎯 TP2 HIT @ ${format_price(tp2)}", "TP2_HIT"
                     elif current >= tp1 and stage < 1:
-                        new_stage = 1
-                        event = f"✅ TP1 HIT @ ${format_price(tp1)}"
-                        status = "TP1_HIT"
+                        new_stage, event, status = 1, f"✅ TP1 HIT @ ${format_price(tp1)}", "TP1_HIT"
                     elif current <= sl:
-                        # If TP1/TP2 was already hit, record a
-                        # post-target stop rather than pretending it
-                        # was a clean SL trade.
-                        if stage > 0:
-                            status = "STOP_AFTER_TARGET"
-                            event = (
-                                f"⛔ Stop reached after TP{stage} "
-                                f"@ ${format_price(sl)}"
-                            )
-                        else:
-                            status = "SL_HIT"
-                            event = f"⛔ SL HIT @ ${format_price(sl)}"
+                        status = "STOP_AFTER_TARGET" if stage > 0 else "SL_HIT"
+                        event = f"⛔ Stop reached after TP{stage} @ ${format_price(sl)}" if stage > 0 else f"⛔ SL HIT @ ${format_price(sl)}"
                         closed = True
-
                 else:
                     if current <= tp3 and stage < 3:
-                        new_stage = 3
-                        event = f"🚀 TP3 HIT @ ${format_price(tp3)}"
-                        status = "TP3_HIT"
-                        closed = True
+                        new_stage, event, status, closed = 3, f"🚀 TP3 HIT @ ${format_price(tp3)}", "TP3_HIT", True
                     elif current <= tp2 and stage < 2:
-                        new_stage = 2
-                        event = f"🎯 TP2 HIT @ ${format_price(tp2)}"
-                        status = "TP2_HIT"
+                        new_stage, event, status = 2, f"🎯 TP2 HIT @ ${format_price(tp2)}", "TP2_HIT"
                     elif current <= tp1 and stage < 1:
-                        new_stage = 1
-                        event = f"✅ TP1 HIT @ ${format_price(tp1)}"
-                        status = "TP1_HIT"
+                        new_stage, event, status = 1, f"✅ TP1 HIT @ ${format_price(tp1)}", "TP1_HIT"
                     elif current >= sl:
-                        if stage > 0:
-                            status = "STOP_AFTER_TARGET"
-                            event = (
-                                f"⛔ Stop reached after TP{stage} "
-                                f"@ ${format_price(sl)}"
-                            )
-                        else:
-                            status = "SL_HIT"
-                            event = f"⛔ SL HIT @ ${format_price(sl)}"
+                        status = "STOP_AFTER_TARGET" if stage > 0 else "SL_HIT"
+                        event = f"⛔ Stop reached after TP{stage} @ ${format_price(sl)}" if stage > 0 else f"⛔ SL HIT @ ${format_price(sl)}"
                         closed = True
 
                 if event:
-                    update_signal_stage(
-                        signal_id,
-                        status,
-                        new_stage,
-                        1 if closed else 0
-                    )
-
-                    send_signal_update(
-                        sym,
-                        side,
-                        entry,
-                        current,
-                        event
-                    )
-
-                    log_event(
-                        f"Signal #{signal_id} {sym}: {event} "
-                        f"(closed={closed})"
-                    )
-
+                    update_signal_stage(signal_id, status, new_stage, 1 if closed else 0)
+                    send_signal_update(sym, side, entry, current, event)
+                    try:
+                        asyncio.run(broadcast_signal_hit_to_marketing_groups(sym, event))
+                    except Exception:
+                        pass
         except Exception as e:
             log_event(f"Live monitor error: {e}")
-
         time.sleep(60)
 
 
 # ============================================================
-# RESULT STATISTICS
+# RESULT STATISTICS & REPORTS
 # ============================================================
 
 def get_result_stats(hours=24):
-    cutoff = (
-        datetime.now(IST) - timedelta(hours=hours)
-    ).strftime("%Y-%m-%d %H:%M:%S")
-
+    cutoff = (datetime.now(IST) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     conn = db_connect()
-
-    rows = conn.execute(
-        """
-        SELECT status, current_stage, closed
-        FROM signal_history
-        WHERE created_date >= ?
-        """,
-        (cutoff,)
-    ).fetchall()
-
+    rows = conn.execute("SELECT status, current_stage, closed FROM signal_history WHERE created_date >= ?", (cutoff,)).fetchall()
     conn.close()
 
     total = len(rows)
@@ -1219,35 +1190,22 @@ def get_result_stats(hours=24):
     tp2 = sum(r["current_stage"] >= 2 for r in rows)
     tp3 = sum(r["current_stage"] >= 3 for r in rows)
     sl = sum(r["status"] == "SL_HIT" for r in rows)
-    stop_after_target = sum(
-        r["status"] == "STOP_AFTER_TARGET" for r in rows
-    )
+    stop_after_target = sum(r["status"] == "STOP_AFTER_TARGET" for r in rows)
     closed = sum(r["closed"] == 1 for r in rows)
 
     clean_wins = tp3
     clean_losses = sl
     decided = clean_wins + clean_losses
-
-    win_rate = (
-        round(clean_wins / decided * 100, 1)
-        if decided else 0.0
-    )
+    win_rate = round(clean_wins / decided * 100, 1) if decided else 0.0
 
     return {
-        "total": total,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "sl": sl,
-        "stop_after_target": stop_after_target,
-        "closed": closed,
-        "win_rate": win_rate
+        "total": total, "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
+        "stop_after_target": stop_after_target, "closed": closed, "win_rate": win_rate
     }
 
 
 def generate_24h_result_report():
     stats = get_result_stats(24)
-
     msg = (
         "📊 <b>24-HOUR SIGNAL REPORT</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1256,67 +1214,23 @@ def generate_24h_result_report():
         f"🎯 <b>TP2 Reached:</b> {stats['tp2']}\n"
         f"🚀 <b>TP3 Reached:</b> {stats['tp3']}\n"
         f"⛔ <b>Clean SL:</b> {stats['sl']}\n"
-        f"⚠️ <b>Stop After Target:</b> "
-        f"{stats['stop_after_target']}\n"
-        f"📈 <b>Clean TP3/SL Rate:</b> "
-        f"{stats['win_rate']}%\n"
+        f"📈 <b>Clean Win Rate:</b> {stats['win_rate']}%\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "ℹ️ <i>Statistics are generated from recorded signals. "
-        "Past results do not guarantee future performance.</i>\n"
         f"💎 <b>VIP:</b> {vip_bot_link()}"
     )
-
     send_telegram_msg(VIP_BOT_TOKEN, VIP_CHANNEL_ID, msg)
     send_telegram_msg(FREE_BOT_TOKEN, FREE_CHANNEL_ID, msg)
 
-    log_event(
-        f"24h report sent: total={stats['total']} "
-        f"TP3={stats['tp3']} SL={stats['sl']} "
-        f"rate={stats['win_rate']}%"
-    )
-
 
 # ============================================================
-# FREE CHANNEL CONVERSION / REFERRAL BOT
+# BOT HANDLERS ($1 TRIAL, REFERRAL, & PAYMENT)
 # ============================================================
-
-KEYBOARD_LAYOUT = {
-    "keyboard": [
-        [
-            {"text": "📢 Join Free Channel"},
-            {"text": "✅ Verify Free Join"}
-        ],
-        [
-            {"text": "🎁 My Referral Link"},
-            {"text": "📊 24H Results"}
-        ],
-        [
-            {"text": "💎 View VIP Plans"},
-            {"text": "💳 Get Payment Address"}
-        ],
-        [
-            {"text": "🔍 Verify Payment"},
-            {"text": "✅ How to Verify TXID"}
-        ]
-    ],
-    "resize_keyboard": True,
-    "is_persistent": True
-}
-
 
 def set_user_state(user_id, state):
     conn = db_connect()
     conn.execute(
-        """
-        INSERT OR REPLACE INTO user_states
-        (user_id, state, updated_date)
-        VALUES (?, ?, ?)
-        """,
-        (
-            user_id,
-            state,
-            datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        )
+        "INSERT OR REPLACE INTO user_states (user_id, state, updated_date) VALUES (?, ?, ?)",
+        (user_id, state, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
     conn.close()
@@ -1324,617 +1238,205 @@ def set_user_state(user_id, state):
 
 def get_user_state(user_id):
     conn = db_connect()
-    row = conn.execute(
-        "SELECT state FROM user_states WHERE user_id = ?",
-        (user_id,)
-    ).fetchone()
+    row = conn.execute("SELECT state FROM user_states WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
-
     return row["state"] if row else "IDLE"
 
 
 def get_referral_stats(user_id):
     conn = db_connect()
     row = conn.execute(
-        """
-        SELECT
-            COUNT(*) AS total,
-            SUM(joined_free) AS joined
-        FROM referrals
-        WHERE referrer_id = ?
-        """,
+        "SELECT COUNT(*) AS total, SUM(joined_free) AS joined FROM referrals WHERE referrer_id = ?",
         (user_id,)
     ).fetchone()
     conn.close()
-
-    return {
-        "total": int(row["total"] or 0),
-        "joined": int(row["joined"] or 0)
-    }
+    return {"total": int(row["total"] or 0), "joined": int(row["joined"] or 0)}
 
 
 def get_or_create_user_invite(user_id):
-    code = make_referral_code(user_id)
-    return vip_bot_link(code)
+    return vip_bot_link(make_referral_code(user_id))
 
 
-def send_bot_welcome(chat_id, payload=None):
+def generate_instant_trial_signal(chat_id):
+    signal = build_signal() or {"symbol": "BTCUSDT", "price": 65000, "side": "LONG", "mode": "FUTURES SCALP", "leverage": "10x", "rsi": 55, "tp1": 65500, "tp2": 66000, "tp3": 67000, "sl": 64000}
     msg = (
-        "🤖 <b>Welcome to Binance Top 10 Signals</b>\n\n"
-        "Get free market signals, live target updates and "
-        "recorded performance statistics.\n\n"
-        "🎯 <b>Start here:</b>\n"
-        "1️⃣ Join the Free Channel\n"
-        "2️⃣ Tap Verify Free Join\n"
-        "3️⃣ Receive the latest free signal updates\n\n"
-        f"📢 <b>Free Channel:</b> {free_channel_link()}\n\n"
-        "⚠️ <i>No guaranteed profits. Always use your own risk "
-        "management.</i>"
+        f"⚡ <b>YOUR PAID $1 TRIAL VIP SIGNAL</b> ⚡\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 <b>Pair:</b> #{signal['symbol']}\n"
+        f"📊 <b>Side:</b> {signal['side']}\n"
+        f"📥 <b>Entry:</b> ${format_price(signal['price'])}\n"
+        f"🎯 <b>TP1:</b> ${format_price(signal['tp1'])}\n"
+        f"🎯 <b>TP2:</b> ${format_price(signal['tp2'])}\n"
+        f"🚀 <b>TP3:</b> ${format_price(signal['tp3'])}\n"
+        f"⛔ <b>SL:</b> ${format_price(signal['sl'])}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <b>Upgrade to Full VIP:</b> {vip_bot_link()}"
     )
-
-    send_telegram_msg(
-        VIP_BOT_TOKEN,
-        chat_id,
-        msg,
-        KEYBOARD_LAYOUT
-    )
-
-
-def handle_start(chat_id, payload):
-    register_user(chat_id, payload or "direct")
-    register_referral(chat_id, payload)
-    send_bot_welcome(chat_id, payload)
+    send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
 
 
 def handle_bot_message(chat_id, text):
     text_clean = text.strip()
-
-    # /start and /start ref_xxx
     if text_clean.startswith("/start"):
         parts = text_clean.split(maxsplit=1)
-        payload = parts[1].strip() if len(parts) > 1 else None
-        handle_start(chat_id, payload)
+        payload = parts[1].strip() if len(parts) > 1 else "direct"
+        register_user(chat_id, payload)
+        register_referral(chat_id, payload)
+        
+        msg = (
+            "🤖 <b>Welcome to Binance Top 10 Signals</b>\n\n"
+            "⚡ <b>Trial Offer:</b> Get 1 High-Accuracy VIP Signal for <b>$1 USDT</b>!\n"
+            f"📢 <b>Free Channel:</b> {free_channel_link()}"
+        )
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg, KEYBOARD_LAYOUT)
         return
 
     register_user(chat_id)
 
     if text_clean == "📢 Join Free Channel":
         invite = create_invite_link(f"user_{chat_id}")
-
-        msg = (
-            "📢 <b>Join the Free Channel</b>\n\n"
-            "Join the channel first, then come back and press "
-            "<b>Verify Free Join</b>.\n\n"
-            f"👉 <a href=\"{invite}\">JOIN FREE CHANNEL</a>\n\n"
-            "This is an opt-in verification step so the bot can "
-            "unlock the free content."
-        )
-
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
-        return
-
-    if text_clean == "✅ Verify Free Join":
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"👉 <a href=\"{invite}\">JOIN FREE CHANNEL</a>\nThen tap Verify Free Join.")
+    elif text_clean == "✅ Verify Free Join":
         joined = update_free_join_status(chat_id)
-
         if joined:
-            send_telegram_msg(
-                VIP_BOT_TOKEN,
-                chat_id,
-                "✅ <b>Free Channel membership verified.</b>\n\n"
-                "You are now eligible for the free signal flow.\n\n"
-                f"📢 {free_channel_link()}"
-            )
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "✅ Free Channel membership verified!")
         else:
-            send_telegram_msg(
-                VIP_BOT_TOKEN,
-                chat_id,
-                "❌ <b>Join not detected yet.</b>\n\n"
-                f"Please join: {free_channel_link()}\n"
-                "Then press <b>Verify Free Join</b> again."
-            )
-        return
-
-    if text_clean == "🎁 My Referral Link":
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "❌ Join not detected yet.")
+    elif text_clean == "🎁 My Referral Link":
         link = get_or_create_user_invite(chat_id)
         stats = get_referral_stats(chat_id)
-
-        msg = (
-            "🎁 <b>Your Referral Link</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<code>{link}</code>\n\n"
-            f"👥 <b>Total referrals:</b> {stats['total']}\n"
-            f"✅ <b>Free-channel joins:</b> {stats['joined']}\n\n"
-            "Share the link with people who are genuinely interested "
-            "in crypto signals. Referral tracking is automatic when "
-            "they start the bot."
-        )
-
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
-        return
-
-    if text_clean == "📊 24H Results":
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"🎁 <b>Your Link:</b>\n<code>{link}</code>\nTotal Referrals: {stats['total']}")
+    elif text_clean == "📊 24H Results":
         stats = get_result_stats(24)
-
-        msg = (
-            "📊 <b>24-HOUR RESULTS</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Signals: {stats['total']}\n"
-            f"TP1 reached: {stats['tp1']}\n"
-            f"TP2 reached: {stats['tp2']}\n"
-            f"TP3 reached: {stats['tp3']}\n"
-            f"Clean SL: {stats['sl']}\n"
-            f"Stop after target: {stats['stop_after_target']}\n"
-            f"Clean TP3/SL rate: {stats['win_rate']}%\n\n"
-            "Past results are not a guarantee of future performance."
-        )
-
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
-        return
-
-    if text_clean == "💎 View VIP Plans":
-        msg = (
-            "💎 <b>VIP PLANS</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "• 10 Days — $10 USDT\n"
-            "• 20 Days — $18 USDT\n"
-            "• 30 Days — $27 USDT\n\n"
-            "VIP includes the complete signal levels and live "
-            "TP/SL updates.\n\n"
-            "No guaranteed-return claims are made."
-        )
-
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
-        return
-
-    if text_clean == "💳 Get Payment Address":
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"📊 <b>Results:</b> Signals: {stats['total']} | Win Rate: {stats['win_rate']}%")
+    elif text_clean == "💎 View VIP Plans":
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, "💎 <b>Plans:</b>\n• $1 Trial Signal\n• 10 Days — $10 USDT\n• 20 Days — $18 USDT\n• 30 Days — $27 USDT")
+    elif text_clean in ("💳 Get Payment Address", "🔍 Verify Payment"):
         set_user_state(chat_id, "AWAITING_TXID")
-
-        msg = (
-            "💳 <b>USDT TRC20 PAYMENT</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<code>{TRUST_WALLET_ADDRESS}</code>\n\n"
-            "Send only USDT on TRC20 network.\n"
-            "After payment, press <b>Verify Payment</b> and send "
-            "the transaction hash."
-        )
-
-        send_telegram_msg(VIP_BOT_TOKEN, chat_id, msg)
-        return
-
-    if text_clean == "🔍 Verify Payment":
-        set_user_state(chat_id, "AWAITING_TXID")
-
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "🔍 <b>Payment Verification</b>\n\n"
-            "Please send your TRC20 transaction hash (TXID)."
-        )
-        return
-
-    if text_clean == "✅ How to Verify TXID":
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "📖 <b>HOW TO VERIFY</b>\n\n"
-            "1. Send the correct USDT amount to the wallet.\n"
-            "2. Use TRC20 network.\n"
-            "3. Copy the transaction hash/TXID.\n"
-            "4. Send it here."
-        )
-        return
-
-    # Numeric messages are treated as Binance UID ONLY when the
-    # user explicitly requested the referral flow.
-    state = get_user_state(chat_id)
-
-    if text_clean.isdigit() and 7 <= len(text_clean) <= 12:
-        if state == "AWAITING_BINANCE_UID":
-            save_binance_uid(chat_id, text_clean)
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"💳 <b>USDT TRC20 Address:</b>\n<code>{TRUST_WALLET_ADDRESS}</code>\n\nSend payment and send your TXID here.")
+    elif text_clean == "✅ How to Verify TXID":
+        send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📖 Send USDT (TRC20) and send your transaction hash (TXID) here.")
+    elif text_clean.isdigit() and 7 <= len(text_clean) <= 12:
+        # Binance UID handling
+        conn = db_connect()
+        try:
+            conn.execute(
+                "INSERT INTO referral_claims (user_id, binance_uid, status, created_date) VALUES (?, ?, 'PENDING', ?)",
+                (chat_id, text_clean, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            conn.commit()
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "📥 <b>Binance UID received!</b> Admin verification pending.")
+        except Exception:
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This Binance UID is already submitted.")
+        finally:
+            conn.close()
+    else:
+        txid = text_clean
+        if not re.fullmatch(r"[A-Za-z0-9]{20,100}", txid):
             return
 
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "ℹ️ If you want to submit a Binance UID, first use "
-            "the referral flow. Random numeric messages are not "
-            "treated as payment/UID automatically."
-        )
-        return
+        conn = db_connect()
+        if conn.execute("SELECT txid FROM processed_txids WHERE txid = ?", (txid,)).fetchone():
+            conn.close()
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "⚠️ This TXID has already been used.")
+            return
 
-    if state == "AWAITING_TXID":
-        process_payment_txid(chat_id, text_clean)
-        return
+        valid, amount, reason = verify_usdt_trc20_tx(txid, 1.0)
+        if not valid:
+            conn.close()
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"❌ Verification failed: {reason}")
+            return
 
-    send_telegram_msg(
-        VIP_BOT_TOKEN,
-        chat_id,
-        "Use the menu buttons above or send /start."
-    )
+        conn.execute("INSERT INTO processed_txids (txid) VALUES (?)", (txid,))
+        
+        if 1.0 <= amount < 9.0:
+            conn.commit()
+            conn.close()
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, "✅ $1 Payment Verified! Dispatching your Trial Signal...")
+            generate_instant_trial_signal(chat_id)
+        else:
+            days = 30 if amount >= 27 else (20 if amount >= 18 else 10)
+            plan = "30 Days VIP" if days == 30 else ("20 Days VIP" if days == 20 else "10 Days VIP")
+            expiry = (datetime.now(IST) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("INSERT OR REPLACE INTO members (user_id, expiry_date, status) VALUES (?, ?, 'ACTIVE')", (chat_id, expiry))
+            conn.commit()
+            conn.close()
+            send_telegram_msg(VIP_BOT_TOKEN, chat_id, f"✅ <b>Payment Verified!</b> {plan} active till {expiry}.")
 
 
-def save_binance_uid(chat_id, binance_uid):
-    now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-
-    conn = db_connect()
-
+def verify_usdt_trc20_tx(txid, expected_amount_min=1.0):
     try:
-        conn.execute(
-            """
-            INSERT INTO referral_claims
-            (user_id, binance_uid, status, created_date)
-            VALUES (?, ?, 'PENDING', ?)
-            """,
-            (chat_id, binance_uid, now)
-        )
-
-        conn.commit()
-
-    except sqlite3.IntegrityError:
-        conn.close()
-
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "⚠️ This Binance UID has already been submitted."
-        )
-        return
-
-    conn.close()
-
-    send_telegram_msg(
-        VIP_BOT_TOKEN,
-        chat_id,
-        "📥 <b>Binance UID received.</b>\n\n"
-        f"UID: <code>{binance_uid}</code>\n"
-        "Status: <b>Pending verification</b>\n\n"
-        "No VIP access is granted until the referral is actually "
-        "verified."
-    )
-
-    set_user_state(chat_id, "IDLE")
-
-
-# ============================================================
-# PAYMENT VERIFICATION
-# ============================================================
-
-def verify_usdt_trc20_tx(txid, expected_amount_min=10.0):
-    try:
-        url = (
-            "https://apilist.tronscan.org/api/"
-            f"transaction-info?hash={txid.strip()}"
-        )
-
+        url = f"https://apilist.tronscan.org/api/transaction-info?hash={txid.strip()}"
         res = requests.get(url, timeout=10)
-
         if res.status_code != 200:
             return False, 0, "Blockchain API error."
-
         data = res.json()
-
-        if not data:
-            return False, 0, "Transaction not found."
-
-        if data.get("contractRet") not in (None, "SUCCESS"):
-            return False, 0, "Transaction failed or is not confirmed."
-
-        transfers = data.get("trc20TransferInfo", [])
-
-        if not transfers:
-            return False, 0, "No TRC20 transfer found."
-
-        for transfer in transfers:
-            to_addr = transfer.get("to_address", "")
-            symbol = transfer.get("symbol", "")
-
-            try:
-                amount = float(
-                    transfer.get("amount_str", "0")
-                ) / 10**6
-            except Exception:
-                amount = 0
-
-            if (
-                to_addr == TRUST_WALLET_ADDRESS
-                and symbol.upper() == "USDT"
-                and amount >= expected_amount_min
-            ):
-                return True, amount, "Verification successful."
-
-        return (
-            False,
-            0,
-            "Recipient, token or amount does not match."
-        )
-
+        if not data or data.get("contractRet") not in (None, "SUCCESS"):
+            return False, 0, "Transaction failed or unconfirmed."
+        
+        for transfer in data.get("trc20TransferInfo", []):
+            if transfer.get("to_address") == TRUST_WALLET_ADDRESS and transfer.get("symbol", "").upper() == "USDT":
+                amt = float(transfer.get("amount_str", "0")) / 10**6
+                if amt >= expected_amount_min:
+                    return True, amt, "Success"
+        return False, 0, "Recipient or amount does not match."
     except Exception as e:
-        return False, 0, f"Verification error: {e}"
-
-
-def process_payment_txid(chat_id, txid):
-    # Basic TXID format check.
-    if not re.fullmatch(r"[A-Za-z0-9]{20,100}", txid):
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "❌ Invalid TXID format. Please send the TRON "
-            "transaction hash."
-        )
-        return
-
-    conn = db_connect()
-
-    used = conn.execute(
-        "SELECT txid FROM processed_txids WHERE txid = ?",
-        (txid,)
-    ).fetchone()
-
-    conn.close()
-
-    if used:
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "⚠️ This TXID has already been used."
-        )
-        return
-
-    valid, amount, reason = verify_usdt_trc20_tx(
-        txid,
-        expected_amount_min=10
-    )
-
-    if not valid:
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "❌ <b>Payment verification failed</b>\n\n"
-            f"Reason: {html.escape(reason)}"
-        )
-        return
-
-    if amount >= 27:
-        days = 30
-        plan = "30 Days VIP"
-    elif amount >= 18:
-        days = 20
-        plan = "20 Days VIP"
-    else:
-        days = 10
-        plan = "10 Days VIP"
-
-    expiry = datetime.now(IST) + timedelta(days=days)
-    expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S")
-
-    conn = db_connect()
-
-    try:
-        conn.execute(
-            "INSERT INTO processed_txids (txid) VALUES (?)",
-            (txid,)
-        )
-
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO members
-            (user_id, expiry_date, status)
-            VALUES (?, ?, 'ACTIVE')
-            """,
-            (chat_id, expiry_str)
-        )
-
-        conn.commit()
-
-    except sqlite3.IntegrityError:
-        conn.close()
-        send_telegram_msg(
-            VIP_BOT_TOKEN,
-            chat_id,
-            "⚠️ This transaction has already been processed."
-        )
-        return
-
-    conn.close()
-
-    invite = create_vip_invite(chat_id)
-
-    send_telegram_msg(
-        VIP_BOT_TOKEN,
-        chat_id,
-        "✅ <b>PAYMENT VERIFIED</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 Plan: {plan}\n"
-        f"💰 Amount: {amount:.2f} USDT\n"
-        f"⏳ Valid till: {expiry_str}\n\n"
-        f"💎 <b>VIP Channel:</b>\n{invite}"
-    )
-
-    set_user_state(chat_id, "IDLE")
-
-    log_event(
-        f"Payment verified for {chat_id}: "
-        f"{amount:.2f} USDT / {days} days"
-    )
-
-
-def create_vip_invite(user_id):
-    data = tg_request(
-        VIP_BOT_TOKEN,
-        "createChatInviteLink",
-        {
-            "chat_id": VIP_CHANNEL_ID,
-            "name": f"vip_{user_id}"[:32],
-            "member_limit": 1
-        }
-    )
-
-    if data.get("ok"):
-        return data["result"]["invite_link"]
-
-    # Fallback. Replace with a permanent VIP invite if your
-    # VIP channel is private and bot cannot create links.
-    return "Please contact admin for the VIP invite."
+        return False, 0, str(e)
 
 
 # ============================================================
-# EXPIRY WORKER
+# EXPIRY & REMINDER WORKERS
 # ============================================================
-
-def kick_telegram_user(chat_id, user_id):
-    ban = tg_request(
-        VIP_BOT_TOKEN,
-        "banChatMember",
-        {
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "revoke_messages": False
-        }
-    )
-
-    if not ban.get("ok"):
-        return False
-
-    unban = tg_request(
-        VIP_BOT_TOKEN,
-        "unbanChatMember",
-        {
-            "chat_id": chat_id,
-            "user_id": user_id,
-            "only_if_banned": True
-        }
-    )
-
-    return unban.get("ok", False)
-
 
 def membership_expiry_checker():
     log_event("Membership expiry worker started.")
-
     while True:
         try:
             now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-
             conn = db_connect()
-            rows = conn.execute(
-                """
-                SELECT user_id
-                FROM members
-                WHERE expiry_date <= ?
-                AND status = 'ACTIVE'
-                """,
-                (now,)
-            ).fetchall()
-
+            rows = conn.execute("SELECT user_id FROM members WHERE expiry_date <= ? AND status = 'ACTIVE'", (now,)).fetchall()
             for row in rows:
-                user_id = row["user_id"]
-
-                kick_telegram_user(
-                    VIP_CHANNEL_ID,
-                    user_id
-                )
-
-                conn.execute(
-                    """
-                    UPDATE members
-                    SET status = 'EXPIRED'
-                    WHERE user_id = ?
-                    """,
-                    (user_id,)
-                )
-
-                send_telegram_msg(
-                    VIP_BOT_TOKEN,
-                    user_id,
-                    "⚠️ <b>Your VIP membership has expired.</b>\n\n"
-                    "You can renew from the bot menu."
-                )
-
-                log_event(
-                    f"VIP membership expired: {user_id}"
-                )
-
+                u_id = row["user_id"]
+                tg_request(VIP_BOT_TOKEN, "banChatMember", {"chat_id": VIP_CHANNEL_ID, "user_id": u_id})
+                tg_request(VIP_BOT_TOKEN, "unbanChatMember", {"chat_id": VIP_CHANNEL_ID, "user_id": u_id, "only_if_banned": True})
+                conn.execute("UPDATE members SET status = 'EXPIRED' WHERE user_id = ?", (u_id,))
+                send_telegram_msg(VIP_BOT_TOKEN, u_id, "⚠️ <b>Your VIP membership has expired.</b>")
             conn.commit()
             conn.close()
-
         except Exception as e:
             log_event(f"Expiry worker error: {e}")
-
         time.sleep(3600)
 
 
-# ============================================================
-# TELEGRAM POLLING
-# ============================================================
-
 def telegram_polling_worker():
     log_event("Telegram polling worker started.")
-
     offset = 0
-
-    # Ensure polling works if a webhook was previously configured.
     try:
-        tg_request(
-            VIP_BOT_TOKEN,
-            "deleteWebhook",
-            {"drop_pending_updates": False}
-        )
+        tg_request(VIP_BOT_TOKEN, "deleteWebhook", {"drop_pending_updates": False})
     except Exception:
         pass
 
     while True:
         try:
-            data = tg_request(
-                VIP_BOT_TOKEN,
-                "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": 30,
-                    "allowed_updates": ["message"]
-                },
-                timeout=35
-            )
-
+            data = tg_request(VIP_BOT_TOKEN, "getUpdates", {"offset": offset, "timeout": 30}, timeout=35)
             if data.get("ok"):
                 for update in data.get("result", []):
                     offset = update["update_id"] + 1
-
-                    message = update.get("message")
-                    if not message:
-                        continue
-
-                    chat = message.get("chat", {})
-                    chat_id = chat.get("id")
-                    text = message.get("text", "")
-
-                    if chat_id and text:
-                        threading.Thread(
-                            target=handle_bot_message,
-                            args=(chat_id, text),
-                            daemon=True
-                        ).start()
-
+                    msg = update.get("message")
+                    if msg and "chat" in msg and "text" in msg:
+                        threading.Thread(target=handle_bot_message, args=(msg["chat"]["id"], msg["text"]), daemon=True).start()
         except Exception as e:
             log_event(f"Polling error: {e}")
-            time.sleep(3)
+        time.sleep(2)
 
-
-# ============================================================
-# MARKET SCANNER
-# ============================================================
 
 def continuous_market_scanner():
-    log_event(
-        f"Market scanner started: "
-        f"Free={FREE_MAX_PER_DAY}/day, VIP={VIP_MAX_PER_DAY}/day"
-    )
-
+    log_event("Market scanner started.")
     while True:
         try:
             scan_and_dispatch(False)
         except Exception as e:
             log_event(f"Scanner error: {e}")
-
         time.sleep(120)
 
 
@@ -1944,11 +1446,7 @@ def continuous_market_scanner():
 
 @app.route("/")
 def home():
-    return jsonify({
-        "status": "active",
-        "service": "BinanceTop10",
-        "time": datetime.now(IST).isoformat()
-    })
+    return jsonify({"status": "active", "service": "BinanceTop10", "time": datetime.now(IST).isoformat()})
 
 
 @app.route("/logs")
@@ -1957,118 +1455,34 @@ def get_logs():
         return jsonify({"logs": list(system_logs)})
 
 
-@app.route("/stats")
-def stats_route():
-    stats = get_result_stats(24)
-
-    conn = db_connect()
-
-    users = conn.execute(
-        "SELECT COUNT(*) AS c FROM users"
-    ).fetchone()["c"]
-
-    verified = conn.execute(
-        """
-        SELECT COUNT(*) AS c
-        FROM users
-        WHERE free_join_verified = 1
-        """
-    ).fetchone()["c"]
-
-    referrals = conn.execute(
-        "SELECT COUNT(*) AS c FROM referrals"
-    ).fetchone()["c"]
-
-    conn.close()
-
-    return jsonify({
-        "signals_24h": stats,
-        "bot_users": users,
-        "verified_free_members": verified,
-        "referrals": referrals,
-        "free_signals_today": free_signals_today,
-        "vip_signals_today": vip_signals_today
-    })
-
-
 @app.route("/force-signal")
 def force_signal():
-    # Admin-only protection is recommended before exposing this route.
-    threading.Thread(
-        target=scan_and_dispatch,
-        args=(True,),
-        daemon=True
-    ).start()
-
-    return jsonify({
-        "status": "success",
-        "message": "Force scan triggered."
-    })
+    threading.Thread(target=scan_and_dispatch, args=(True,), daemon=True).start()
+    return jsonify({"status": "success", "message": "Force scan triggered."})
 
 
 @app.route("/force-result")
 def force_result():
-    threading.Thread(
-        target=generate_24h_result_report,
-        daemon=True
-    ).start()
-
-    return jsonify({
-        "status": "success",
-        "message": "24h result report triggered."
-    })
+    threading.Thread(target=generate_24h_result_report, daemon=True).start()
+    return jsonify({"status": "success", "message": "24h result report triggered."})
 
 
 @app.route("/health")
 def health():
-    try:
-        conn = db_connect()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        db_ok = True
-    except Exception:
-        db_ok = False
-
-    return jsonify({
-        "status": "ok" if db_ok else "degraded",
-        "database": db_ok,
-        "time": datetime.now(IST).isoformat()
-    })
+    return jsonify({"status": "ok", "time": datetime.now(IST).isoformat()})
 
 
 # ============================================================
 # START WORKERS
 # ============================================================
 
-threading.Thread(
-    target=telegram_polling_worker,
-    daemon=True
-).start()
+threading.Thread(target=telegram_polling_worker, daemon=True).start()
+threading.Thread(target=continuous_market_scanner, daemon=True).start()
+threading.Thread(target=live_signal_monitor_worker, daemon=True).start()
+threading.Thread(target=membership_expiry_checker, daemon=True).start()
+threading.Thread(target=start_marketing_thread, daemon=True).start()
 
-threading.Thread(
-    target=continuous_market_scanner,
-    daemon=True
-).start()
-
-threading.Thread(
-    target=live_signal_monitor_worker,
-    daemon=True
-).start()
-
-threading.Thread(
-    target=membership_expiry_checker,
-    daemon=True
-).start()
-
-
-# ============================================================
-# RUN FLASK
-# ============================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        threaded=True
-    )
+    app.run(host="0.0.0.0", port=port, threaded=True)
