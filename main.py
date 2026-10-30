@@ -96,25 +96,25 @@ def init_db():
             " TEXT, message_id INTEGER, created_date TEXT)"
         )
         cursor.execute("""CREATE TABLE IF NOT EXISTS referral_claims (
-                                user_id INTEGER, 
-                                binance_uid TEXT PRIMARY KEY, 
-                                status TEXT DEFAULT 'PENDING', 
-                                created_date TEXT)""")
+                            user_id INTEGER, 
+                            binance_uid TEXT PRIMARY KEY, 
+                            status TEXT DEFAULT 'PENDING', 
+                            created_date TEXT)""")
         cursor.execute("""CREATE TABLE IF NOT EXISTS signal_history (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                                symbol TEXT, 
-                                entry_price REAL, 
-                                tp1 REAL, 
-                                tp2 REAL, 
-                                tp3 REAL, 
-                                sl REAL, 
-                                timestamp REAL, 
-                                created_date TEXT, 
-                                status TEXT DEFAULT 'PENDING')""")
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                            symbol TEXT, 
+                            entry_price REAL, 
+                            tp1 REAL, 
+                            tp2 REAL, 
+                            tp3 REAL, 
+                            sl REAL, 
+                            timestamp REAL, 
+                            created_date TEXT, 
+                            status TEXT DEFAULT 'PENDING')""")
         cursor.execute("""CREATE TABLE IF NOT EXISTS trial_credits (
-                                user_id INTEGER PRIMARY KEY,
-                                credits_left INTEGER DEFAULT 0,
-                                updated_date TEXT)""")
+                            user_id INTEGER PRIMARY KEY,
+                            credits_left INTEGER DEFAULT 0,
+                            updated_date TEXT)""")
         conn.commit()
         conn.close()
         log_event("Database Initialized Successfully.")
@@ -254,21 +254,20 @@ def get_market_data():
 client_userbot = TelegramClient("growth_userbot_session", API_ID, API_HASH)
 
 def get_dynamic_promo_post():
-    """Generates unique promo texts to avoid Telethon anti-spam filter."""
+    """Generates high-conversion viral promo texts and FOMO offers."""
     headers = [
-        "🔥 <b>ACCURATE CRYPTO SIGNALS</b> 🔥",
-        "⚡ <b>BINANCE FUTURES SIGNAL VIP</b> ⚡",
-        "🚀 <b>90%+ ACCURACY TRADING SIGNALS</b> 🚀"
+        "🚨 <b>TODAY'S ACCURACY: 96.4% (32/33 TARGETS HIT)</b> 🚨",
+        "🔥 <b>FREE BINANCE VIP SIGNALS CHANNEL</b> 🔥",
+        "⚡ <b>STOP LOSING IN TRADING! GET PRO SIGNALS FREE</b> ⚡"
     ]
     bodies = [
-        "Daily 30+ High-Accuracy Signals & Live Market Analysis.\nJoin our channel now and start making profits daily!",
-        "Don't trade blindly in this market! Real-time TP/SL alerts and expert technical analysis provided free.",
-        "Stop losing money in leverage trading! Follow our risk-managed signals or try 1 VIP signal for just $1!"
+        "Humare free channel par rozana 5+ high-accuracy Futures & Spot signals milte hain.\n\n🎁 <b>Special Offer:</b> Sirf $1 me 1 VIP Signal trial lein ya Binance UID bhej kar 1 Mahina Free VIP paayein!",
+        "Kyu loss kar rahe ho market me? Join karo India ka sabse trusted crypto signals group.\n\n📊 Daily 10x - 20x Leverage Scalping Calls with 90%+ Win Rate.",
+        "Aapka loss recover karane ki guarantee! Join our Free Channel now and start making daily profits with us."
     ]
     ctas = [
-        "👉 <b>Join Free Channel:</b> @BinanceTop10Free\n💎 <b>Bot Direct Link:</b> @BinanceTop10_VIPBot",
-        "📢 <b>Free Signals Here:</b> @BinanceTop10Free\n🤖 <b>Instant VIP Access:</b> @BinanceTop10_VIPBot",
-        "🔗 <b>Main Channel:</b> @BinanceTop10Free\n⚡ <b>Get VIP Plan:</b> @BinanceTop10_VIPBot"
+        "👉 <b>Join Free Channel Now:</b> @BinanceTop10Free\n🤖 <b>Direct Bot Access:</b> @BinanceTop10_VIPBot",
+        "📢 <b>Free Signals Link:</b> @BinanceTop10Free\n💎 <b>Claim Free VIP Pass:</b> @BinanceTop10_VIPBot"
     ]
     return f"{random.choice(headers)}\n\n{random.choice(bodies)}\n\n{random.choice(ctas)}"
 
@@ -325,20 +324,25 @@ async def auto_discover_and_market():
     try:
         if not client_userbot.is_connected():
             await client_userbot.start()
-        log_event("🚀 Auto-Discovery & Marketing Engine Started Safely!")
+        log_event("🚀 Turbo Growth & Auto-Marketing Engine Started!")
     except Exception as start_err:
         log_event(f"❌ Userbot Client Start Failed (Check API_ID/API_HASH): {start_err}")
         return
 
+    # Expanded 25+ High-Traffic Target Keywords
     keywords = [
-        "binance trading india", "crypto signals free", 
-        "bitcoin trading group", "crypto scalping signals", 
-        "altcoin signals telegram", "futures trading group"
+        "crypto trading india", "bitcoin signals free", "crypto pump group",
+        "binance futures signals", "altcoin signals telegram", "crypto scalping",
+        "crypto millionaire", "crypto trading community", "bitcoin discussion",
+        "crypto signals VIP free", "ethereum trading", "crypto future call",
+        "crypto hint", "bull run crypto", "daily profit crypto", "crypto india chat",
+        "crypto signals 100%", "forex and crypto", "crypto signals channel",
+        "free crypto signals daily", "crypto strategy", "crypto signals provider"
     ]
 
     NSFW_BLACKLIST = [
         "chatting", "friend", "fun", "dating", "adult", "sexy", "nsfw", 
-        "desi", "call", "girl", "boobs", "bhabhi", "romance", "meet"
+        "desi", "call", "girl", "boobs", "bhabhi", "romance", "meet", "pvt"
     ]
 
     MY_CHANNELS = [
@@ -352,9 +356,9 @@ async def auto_discover_and_market():
                 await client_userbot.connect()
 
             search_keyword = random.choice(keywords)
-            log_event(f"🔍 Searching Telegram for keyword: '{search_keyword}'")
+            log_event(f"🔍 Deep Searching Telegram for keyword: '{search_keyword}'")
 
-            result = await client_userbot(SearchRequest(q=search_keyword, limit=10))
+            result = await client_userbot(SearchRequest(q=search_keyword, limit=15))
 
             for chat in result.chats:
                 is_group = (
@@ -375,19 +379,19 @@ async def auto_discover_and_market():
 
                     try:
                         await client_userbot(JoinChannelRequest(group_username))
-                        log_event(f"➕ Auto-Joined Valid Group: @{group_username}")
+                        log_event(f"➕ Auto-Joined Growth Target: @{group_username}")
 
-                        await asyncio.sleep(random.randint(10, 25))
+                        await asyncio.sleep(random.randint(5, 12))
 
                         promo_message = get_dynamic_promo_post()
                         sent_msg = await safe_send_userbot_message(group_username, promo_message)
 
                         if sent_msg:
                             SENT_PROMO_TRACKER[group_username] = sent_msg.id
-                            log_event(f"✅ Marketing promo sent & tracked for @{group_username}")
+                            log_event(f"✅ Viral Promo Placed in @{group_username}")
 
-                        # Faster Safe Delay (1 to 2 minutes)
-                        delay = random.randint(60, 150)
+                        # Safe Randomized Delay to Avoid Spams/Bans
+                        delay = random.randint(40, 90)
                         log_event(f"⏳ Sleeping {delay}s before next group...")
                         await asyncio.sleep(delay)
 
@@ -397,13 +401,13 @@ async def auto_discover_and_market():
                             await client_userbot(LeaveChannelRequest(group_username))
                         except Exception:
                             pass
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(5)
 
         except Exception as loop_e:
             log_event(f"❌ Auto-Discovery Search Error: {loop_e}")
 
-        log_event("💤 Finished search round. Sleeping 15 minutes before next round...")
-        await asyncio.sleep(900)
+        log_event("💤 Finished search batch. Resting for 10 minutes...")
+        await asyncio.sleep(600)
 
 
 def start_marketing_thread():
